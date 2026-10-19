@@ -311,7 +311,11 @@ def fetch_tv_screener(pro_symbols: list) -> dict:
                 bb_upper = d[12] if len(d) > 12 and d[12] is not None else None
                 bb_lower = d[13] if len(d) > 13 and d[13] is not None else None
                 bb_width_pct = None
-                if bb_upper is not None and bb_lower is not None and close and close > 0:
+                if (bb_upper is not None and bb_lower is not None
+                        and _score_number(bb_upper) is not None
+                        and _score_number(bb_lower) is not None
+                        and _score_number(close, low=0) is not None
+                        and close > 0 and bb_upper >= bb_lower):
                     bb_width_pct = round((bb_upper - bb_lower) / close * 100, 2)
                 results[ps] = {
                     "rel_vol":    d[1] if len(d) > 1 and d[1] is not None else None,
@@ -988,7 +992,10 @@ def score_technical(meta: dict, screener: dict = None) -> dict:
     sc = dict(screener or {})
     for key in ("tv_rsi", "tv_adx", "rel_vol", "sma200_pct", "macd_hist",
                 "close", "volatility", "obv_divergence", "bb_width"):
-        sc[key] = _score_number(sc.get(key))
+        sc[key] = _score_number(
+            sc.get(key),
+            low=0 if key in ("rel_vol", "bb_width") else None,
+        )
 
     # WinRate: 80% → 10pts, 20% → 0 (None → neutral 5.0)
     wr      = _score_number(meta.get("WinRate"), low=0, high=100)
@@ -2822,8 +2829,10 @@ def _data_confidence(meta: dict, fund: dict, sent: dict, internals: dict,
         rsi if rsi is not None else _score_number(sc.get("tv_rsi"), low=0, high=100),
         adx if adx is not None else _score_number(sc.get("tv_adx"), low=0, high=100),
         True if sqz_valid else None,
-        sc.get("rel_vol"), sc.get("sma200_pct"),
-        sc.get("macd_hist"), sc.get("bb_width"),
+        _score_number(sc.get("rel_vol"), low=0),
+        _score_number(sc.get("sma200_pct")),
+        _score_number(sc.get("macd_hist")),
+        _score_number(sc.get("bb_width"), low=0),
     ])
     l2 = coverage([
         fund.get("forward_pe"), fund.get("roe"), fund.get("profit_margin"),
@@ -2838,11 +2847,19 @@ def _data_confidence(meta: dict, fund: dict, sent: dict, internals: dict,
     analyst_observed = br is not None and (
         (count is not None and count > 0) or analyst.get("source") == "TV"
     )
+    # Apply the *same admissibility rules* as score_sentiment.  Merely
+    # finite is not enough: a 150% beat rate or +2 news compound is rejected
+    # by L3 and must not make its decision score more confident.
+    beat_rate = _score_number(earnings.get("beat_rate"), low=0, high=1)
+    quarters = _score_number(earnings.get("quarters"), low=0)
+    news_score = _score_number(news.get("score"), low=-1, high=1)
+    news_count = _score_number(news.get("count"), low=0)
+    earnings_days = _score_number(sent.get("earnings_days_away"), low=0)
     l3 = coverage([
         br if analyst_observed else None,
-        earnings.get("beat_rate") if (_score_number(earnings.get("quarters"), low=0) or 0) > 0 else None,
-        news.get("score") if (_score_number(news.get("count"), low=0) or 0) > 0 else None,
-        sent.get("earnings_days_away"),
+        beat_rate if quarters is not None and quarters > 0 else None,
+        news_score if news_count is not None and news_count > 0 else None,
+        earnings_days,
     ])
     l4 = coverage([
         internals.get("pcr"), internals.get("insider_buy_ratio"),
