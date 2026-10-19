@@ -967,8 +967,12 @@ def _score_number(value, *, low=None, high=None):
 
 
 def _score_observed(value) -> bool:
-    """Only finite numeric values or explicit booleans count as measured data."""
-    return isinstance(value, bool) or _score_number(value) is not None
+    """A measured numeric value must be finite, and never a Boolean.
+
+    Boolean indicator states are converted to explicit numeric observation
+    markers by the caller; they are not valid financial ratios.
+    """
+    return _score_number(value) is not None
 
 
 def score_technical(meta: dict, screener: dict = None) -> dict:
@@ -2828,16 +2832,22 @@ def _data_confidence(meta: dict, fund: dict, sent: dict, internals: dict,
         _score_number(meta.get("NetProfit%")),
         rsi if rsi is not None else _score_number(sc.get("tv_rsi"), low=0, high=100),
         adx if adx is not None else _score_number(sc.get("tv_adx"), low=0, high=100),
-        True if sqz_valid else None,
+        1.0 if sqz_valid else None,
         _score_number(sc.get("rel_vol"), low=0),
         _score_number(sc.get("sma200_pct")),
         _score_number(sc.get("macd_hist")),
         _score_number(sc.get("bb_width"), low=0),
     ])
+    # Score_fundamental sanitizes these six fields through _score_number.
+    # Use the same normalization for confidence: True/False, NaN and other
+    # rejected values must be indistinguishable from missing observations.
     l2 = coverage([
-        fund.get("forward_pe"), fund.get("roe"), fund.get("profit_margin"),
-        fund.get("earnings_growth"), fund.get("debt_to_equity"),
-        fund.get("free_cashflow"),
+        _score_number(fund.get("forward_pe")),
+        _score_number(fund.get("roe")),
+        _score_number(fund.get("profit_margin")),
+        _score_number(fund.get("earnings_growth")),
+        _score_number(fund.get("debt_to_equity")),
+        _score_number(fund.get("free_cashflow")),
     ])
     analyst = sent.get("analyst") or {}
     earnings = sent.get("earnings_beats") or {}
