@@ -125,12 +125,12 @@ def validate_signal(record):
         if payload:
             if key not in sources:
                 raise ValueError(f"{event}: missing {key} source_asof")
-            if utc(sources[key]) > decision:
-                raise ValueError(f"{event}: {key} is future information")
+            if utc(sources[key]) > captured:
+                raise ValueError(f"{event}: {key} was observed after the snapshot capture")
     vix = record.get("vix")
     if vix is not None:
         finite_number(vix)
-        if "vix" not in sources or utc(sources["vix"]) > decision:
+        if "vix" not in sources or utc(sources["vix"]) > captured:
             raise ValueError(f"{event}: VIX is not point-in-time")
     extra = record.get("regime_weights")
     if extra is not None:
@@ -145,11 +145,19 @@ def validate_signal(record):
             if not 0 <= val <= 10:
                 raise ValueError(f"{event}: {key} outside 0..10")
             # Additional scores are only usable if known before decision.
-            if key not in sources or utc(sources[key]) > decision:
+            if key not in sources or utc(sources[key]) > captured:
                 raise ValueError(f"{event}: {key} is not point-in-time")
     for key in ("book_bonus", "pool_boost", "basket_boost"):
         if record.get(key) is not None:
             finite_number(record[key])
+            if record[key] != 0 and (
+                key not in sources or utc(sources[key]) > captured
+            ):
+                raise ValueError(f"{event}: {key} must have point-in-time provenance")
+    if extra is not None and (
+        "regime_weights" not in sources or utc(sources["regime_weights"]) > captured
+    ):
+        raise ValueError(f"{event}: regime must have point-in-time provenance")
     return event, decision
 
 
@@ -405,6 +413,12 @@ def replay(records, old_engine, new_engine, *, mode, asof, cutoff=None,
             item = observed.get((event, horizon))
             if item is None:
                 excluded["missing_outcome"] += 1
+                continue
+            # Training targets must have actually matured and become available
+            # BEFORE the train/test boundary. No outcome known only after the
+            # holdout starts may influence train-period metrics or tuning.
+            if split == "train" and item["available"] > cutoff:
+                excluded["training_label_after_cutoff"] += 1
                 continue
             if item["entry"] <= decision:
                 raise ValueError(f"{event}: entry must be strictly AFTER decision time")
