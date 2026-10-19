@@ -467,9 +467,10 @@ class TestTvAnalystCalibration:
     def test_both_sources_share_one_consensus_band(self):
         import inspect
         src = inspect.getsource(ss.fetch_sentiment_data)
-        assert src.count("_consensus_label(") == 3, (
-            "TV mark, Recommend.All and yfinance branches must all use the "
-            "shared band, or a label means different things per source"
+        assert src.count("_consensus_label(") == 2, (
+            "Only TV analyst recommendation_mark and yfinance analyst "
+            "recommendations may use the consensus label. Recommend.All "
+            "is technical, not analyst sentiment."
         )
 
     def test_weekday_age_excludes_the_weekend(self):

@@ -1,0 +1,30 @@
+name: Phase 4 point-in-time replay verification
+on:
+  push:
+    branches: [review/phase1-phase2-scoring-correctness]
+  pull_request:
+    paths:
+      - benchmarks/phase4_scoring_replay.py
+      - tests/test_phase4_scoring_replay.py
+      - .github/workflows/scoring-phase4.yml
+permissions:
+  contents: read
+jobs:
+  phase4-historical-replay-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout including pinned legacy commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compile replay and tests
+        run: python3 -m py_compile benchmarks/phase4_scoring_replay.py tests/test_phase4_scoring_replay.py
+      - name: Run isolated replay + actual scorer comparison on synthetic timestamps
+        run: python3 -m unittest discover -s tests -p 'test_phase4_scoring_replay.py' -v
+      - name: Security and evidence notice
+        run: |
+          echo "Synthetic data checks program correctness only."
+          echo "No historical empirical edge or profitable performance is claimed."
+          echo "No broker access, no live alerts, and no data uploads."

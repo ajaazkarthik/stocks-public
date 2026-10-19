@@ -1,0 +1,26 @@
+name: Scoring correctness (Phases 1–3)
+on:
+  push:
+    branches:
+      - review/phase1-phase2-scoring-correctness
+  pull_request:
+    paths:
+      - tradingview/signal_stack.py
+      - tests/test_signal_scoring_phase12.py
+      - tests/test_signal_scoring_phase3.py
+      - tests/scoring_reference_oracle.py
+      - .github/workflows/scoring-phase12.yml
+permissions:
+  contents: read
+jobs:
+  independent-scoring-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run phase 1–2 and phase 3 independent arithmetic tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_signal_scoring_phase12.py' -v
+          python3 -m unittest discover -s tests -p 'test_signal_scoring_phase3.py' -v
+      - name: Compile scoring source and tests
+        run: python3 -m py_compile tradingview/signal_stack.py tests/test_signal_scoring_phase12.py tests/test_signal_scoring_phase3.py tests/scoring_reference_oracle.py

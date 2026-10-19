@@ -1,0 +1,440 @@
+"""Phase 1–2 scoring regressions.
+
+Tests the actual production scoring function AST in isolation, requiring only
+Python's standard library (no broker credentials, networking or vendor APIs).
+They deliberately avoid importing signal_stack's heavyweight orchestration.
+Run: python -m unittest discover -s tests -p test_signal_scoring_phase12.py -v
+"""
+from __future__ import annotations
+
+import ast
+import math
+import unittest
+from pathlib import Path
+
+
+SOURCE = Path(__file__).resolve().parents[1] / "tradingview" / "signal_stack.py"
+TEXT = SOURCE.read_text(encoding="utf-8")
+TREE = ast.parse(TEXT, filename=str(SOURCE))
+NAMES = {
+    "_score_number", "_score_observed",
+    "score_technical", "score_fundamental", "score_sentiment",
+    "score_market_internals", "_data_confidence",
+    "_composite_components", "composite", "_compute_decision_scores",
+}
+FUNCS = [node for node in TREE.body
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and node.name in NAMES]
+assert {node.name for node in FUNCS} == NAMES, "One of the production scorers is missing"
+NAMESPACE = {
+    "math": math,
+    "CONFIDENCE_DEMOTION_FLOOR": 0.85,
+}
+exec(compile(ast.Module(body=FUNCS, type_ignores=[]), str(SOURCE), "exec"), NAMESPACE)
+ss = type("ScoringUnderTest", (), {k: staticmethod(NAMESPACE[k]) for k in NAMES})
+
+
+class TestFiniteInputs(unittest.TestCase):
+    def test_nonfinite_and_malformed_inputs_are_unknown(self):
+        for value in (float("nan"), float("inf"), -float("inf"),
+                      "nan", "inf", "-inf", "invalid", None, True):
+            with self.subTest(value=str(value)):
+                self.assertIsNone(ss._score_number(value))
+
+    def test_numeric_strings_and_zero_still_work(self):
+        self.assertEqual(ss._score_number("0"), 0.0)
+        self.assertEqual(ss._score_number("32.5"), 32.5)
+        self.assertIsNone(ss._score_number(101, low=0, high=100))
+
+
+class TestTechnical(unittest.TestCase):
+    def test_all_missing_is_neutral_without_fake_evidence(self):
+        output = ss.score_technical({})
+        self.assertEqual(output["total"], 5.0)
+        self.assertEqual(output["coverage"], 0.0)
+        self.assertEqual(output["adx"], 5.0)
+        self.assertEqual(output["squeeze"], 5.0)
+        self.assertIsNone(output["raw_adx"])
+
+    def test_zero_squeeze_is_observed_but_absence_is_not(self):
+        absent = ss.score_technical({})
+        off = ss.score_technical({"sqzOff": 0})
+        self.assertEqual(off["squeeze"], 4.0)
+        self.assertLess(off["total"], absent["total"])
+        self.assertGreater(off["coverage"], absent["coverage"])
+
+    def test_adx_zero_is_bearish_not_missing(self):
+        absent = ss.score_technical({})
+        weak = ss.score_technical({"ADX": 0})
+        self.assertEqual(weak["adx"], 0.0)
+        self.assertLess(weak["total"], absent["total"])
+
+    def test_invalid_win_rate_cannot_make_layer_perfect(self):
+        poor = {"WinRate": 20, "NetProfit%": -25, "rsi": 28, "ADX": 15, "sqzOff": 0}
+        for bad in (float("nan"), float("inf"), "-inf", -4, 101, "garbage"):
+            with self.subTest(bad=str(bad)):
+                invalid = ss.score_technical(dict(poor, WinRate=bad))
+                unknown = ss.score_technical(dict(poor, WinRate=None))
+                self.assertEqual(invalid["total"], unknown["total"])
+                self.assertEqual(invalid["wr"], 5.0)
+                self.assertLess(invalid["total"], 10.0)
+
+    def test_tv_fallback_counts_as_real_coverage(self):
+        src = {"tv_rsi": 60, "tv_adx": 35}
+        result = ss.score_technical({}, src)
+        self.assertEqual(result["rsi"], 10.0)
+        self.assertEqual(result["adx"], 10.0)
+        self.assertGreater(result["coverage"], 0)
+
+    def test_optional_nonfinite_inputs_are_missing(self):
+        r = ss.score_technical({}, {"macd_hist": float("nan"),
+                                     "bb_width": float("inf"),
+                                     "rel_vol": float("nan")})
+        self.assertEqual(r["total"], 5.0)
+        self.assertEqual(r["coverage"], 0.0)
+
+
+class TestFundamental(unittest.TestCase):
+    def test_all_missing_is_neutral(self):
+        r = ss.score_fundamental({})
+        self.assertEqual(r["total"], 5.0)
+        self.assertEqual(r["piotroski"], 5.0)
+        self.assertEqual(r["piotroski_coverage"], 0.0)
+
+    def test_zero_debt_is_good_not_bad(self):
+        healthy = {"debt_to_equity": 0, "current_ratio": 2.5,
+                   "free_cashflow": 1000}
+        result = ss.score_fundamental(healthy)
+        self.assertEqual(result["health"], 10.0)
+        self.assertEqual(result["health"],
+                         ss.score_fundamental(dict(healthy, debt_to_equity=1))["health"])
+
+    def test_higher_debt_cannot_improve_health_with_other_inputs_fixed(self):
+        base = {"current_ratio": 2.5, "free_cashflow": 1000}
+        observed = [ss.score_fundamental(dict(base, debt_to_equity=x))["health"]
+                    for x in (0, 1, 30, 100, 200)]
+        self.assertEqual(observed, sorted(observed, reverse=True))
+
+    def test_current_ratio_zero_is_observed_bad(self):
+        r = ss.score_fundamental({"debt_to_equity": 0,
+                                  "current_ratio": 0,
+                                  "free_cashflow": 1000})
+        self.assertEqual(r["health"], 7.0)
+
+    def test_sparse_piotroski_is_shrunk_to_neutral(self):
+        one_good = ss.score_fundamental({"free_cashflow": 100})
+        one_bad = ss.score_fundamental({"free_cashflow": -100})
+        self.assertEqual(one_good["piotroski_observed"], 1)
+        self.assertAlmostEqual(one_good["piotroski"], 5.83)
+        self.assertAlmostEqual(one_bad["piotroski"], 4.17)
+
+    def test_complete_piotroski_evidence_gets_original_maximum(self):
+        fields = {"free_cashflow": 100, "roa": 10, "roe": 25,
+                  "current_ratio": 2, "gross_margin": 50,
+                  "revenue_growth": 15}
+        result = ss.score_fundamental(fields)
+        self.assertEqual(result["piotroski"], 10.0)
+        self.assertEqual(result["piotroski_coverage"], 1.0)
+
+    def test_invalid_fundamentals_cannot_escape_to_nan(self):
+        r = ss.score_fundamental({"debt_to_equity": float("nan"),
+                                  "current_ratio": float("-inf"),
+                                  "roe": float("nan")})
+        self.assertTrue(math.isfinite(r["total"]))
+        self.assertEqual(r["total"], 5.0)
+
+
+class TestSentiment(unittest.TestCase):
+    def test_no_evidence_is_neutral(self):
+        r = ss.score_sentiment({})
+        self.assertEqual(r["total"], 5.0)
+        self.assertEqual(r["analyst"], 5.0)
+        self.assertEqual(r["coverage"], 0.0)
+
+    def test_uncovered_analyst_is_not_bearish(self):
+        a = ss.score_sentiment({"analyst": {"total": 0, "bull_ratio": 0.5}})
+        self.assertEqual(a["analyst"], 5.0)
+
+    def test_tradingview_aggregate_is_an_observed_analyst_signal(self):
+        a = ss.score_sentiment({"analyst": {"source": "TV", "total": 0,
+                                             "bull_ratio": 0}})
+        self.assertEqual(a["analyst"], 0.0)
+        self.assertGreater(a["coverage"], 0.0)
+
+    def test_technical_recommend_all_not_used_as_analyst_proxy(self):
+        source = ast.get_source_segment(
+            TEXT, next(n for n in TREE.body
+                       if isinstance(n, ast.FunctionDef)
+                       and n.name == "fetch_sentiment_data"))
+        self.assertNotIn("elif rec_all is not None:", source)
+
+    def test_missing_article_count_does_not_crash(self):
+        self.assertEqual(ss.score_sentiment({"news": {"count": None}})["total"], 5.0)
+
+    def test_invalid_sentiment_components_do_not_escape(self):
+        r = ss.score_sentiment({
+            "analyst": {"source": "TV", "bull_ratio": float("nan"), "total": 0},
+            "news": {"score": float("inf"), "count": 8},
+            "earnings_beats": {"beat_rate": float("nan"), "quarters": 4},
+            "revision_velocity": float("nan"),
+        })
+        self.assertTrue(math.isfinite(r["total"]))
+        self.assertEqual(r["total"], 5.0)
+
+
+class TestInternals(unittest.TestCase):
+    def test_all_missing_is_neutral(self):
+        r = ss.score_market_internals({})
+        self.assertEqual((r["total"], r["coverage"]), (5.0, 0.0))
+
+    def test_nonfinite_vendor_numbers_do_not_create_bullish_macro(self):
+        result = ss.score_market_internals({
+            "pcr": float("nan"), "insider_score_raw": float("nan"),
+            "w52_position": float("nan"), "short_score_raw": float("inf"),
+            "sector_etf_score": float("inf"),
+            "vix3m_vix_ratio": float("nan"),
+        }, yc={"spread_bps": float("nan")}, vix_level=float("nan"))
+        self.assertEqual(result["total"], 5.0)
+        self.assertEqual(result["coverage"], 0.0)
+
+    def test_coverage_shrink_is_intentionally_unchanged(self):
+        r = ss.score_market_internals({"w52_position": 0.7})
+        self.assertGreater(r["total"], 5.0)
+        self.assertLess(r["total"], r["raw_total"])
+        self.assertAlmostEqual(r["coverage"], 0.18)
+
+
+class TestConfidenceAndBlend(unittest.TestCase):
+    def test_fallback_technical_indicators_are_counted(self):
+        r = ss._data_confidence({}, {}, {}, {},
+                                {"tv_rsi": 60, "tv_adx": 30})
+        self.assertAlmostEqual(r["l1"], 2 / 9, places=3)
+
+    def test_tv_aggregate_analyst_is_counted(self):
+        r = ss._data_confidence({}, {}, {
+            "analyst": {"source": "TV", "bull_ratio": 1.1, "total": 0}
+        }, {})
+        self.assertEqual(r["l3"], 0.25)
+
+    def test_nan_is_not_counted_as_coverage(self):
+        r = ss._data_confidence({"WinRate": float("nan")}, {}, {}, {})
+        self.assertEqual(r["l1"], 0.0)
+
+    def test_all_unknown_yields_neutral_composite_before_confidence(self):
+        layers = (ss.score_technical({})["total"],
+                  ss.score_fundamental({})["total"],
+                  ss.score_sentiment({})["total"],
+                  ss.score_market_internals({})["total"])
+        self.assertEqual(layers, (5.0, 5.0, 5.0, 5.0))
+        self.assertEqual(ss.composite(*layers), 50.0)
+        quality, decision = ss._compute_decision_scores(
+            *layers, institutional_l5=None, data_confidence=0)
+        self.assertEqual(quality, 50.0)
+        self.assertEqual(decision, 42.5)
+
+
+class TestAstraSecondReviewFindings(unittest.TestCase):
+    """Regression for two defects independently identified in PR #1 review."""
+
+    def test_negative_bollinger_width_is_missing_not_bullish(self):
+        missing = ss.score_technical({})
+        for invalid in (-0.01, -3.0, -100, float("nan"), float("-inf")):
+            with self.subTest(invalid=invalid):
+                result = ss.score_technical({}, {"bb_width": invalid})
+                self.assertIsNone(result["bb_width"])
+                self.assertEqual(result["total"], missing["total"])
+                self.assertEqual(result["coverage"], missing["coverage"])
+
+    def test_zero_bollinger_width_is_valid_and_observed(self):
+        result = ss.score_technical({}, {"bb_width": 0})
+        self.assertEqual(result["bb_width"], 9.0)
+        self.assertGreater(result["coverage"], 0)
+        self.assertGreater(result["total"], ss.score_technical({})["total"])
+
+    def test_negative_relative_volume_is_not_observed(self):
+        missing = ss.score_technical({})
+        negative = ss.score_technical({}, {"rel_vol": -1})
+        self.assertEqual(negative["total"], missing["total"])
+        self.assertEqual(negative["coverage"], missing["coverage"])
+        self.assertIsNone(negative["rel_vol"])
+
+    def test_upstream_band_width_requires_ordered_bounds(self):
+        """A malformed upstream BB.upper below BB.lower cannot reach the score."""
+        tree_node = next(node for node in TREE.body
+                         if isinstance(node, ast.FunctionDef)
+                         and node.name == "fetch_tv_screener")
+        source = ast.get_source_segment(TEXT, tree_node)
+        self.assertIn("bb_upper >= bb_lower", source)
+
+    def test_invalid_earnings_rate_cannot_increase_confidence(self):
+        missing = {"earnings_beats": {"quarters": 4}}
+        baseline = ss._data_confidence({}, {}, missing, {})
+        for invalid in (-0.01, 1.01, float("nan"), float("inf"), "invalid"):
+            with self.subTest(value=str(invalid)):
+                rejected = {"earnings_beats": {"beat_rate": invalid, "quarters": 4}}
+                self.assertEqual(
+                    ss.score_sentiment(rejected)["total"],
+                    ss.score_sentiment(missing)["total"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["l3"],
+                    baseline["l3"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["overall"],
+                    baseline["overall"])
+
+    def test_invalid_news_sentiment_cannot_increase_confidence(self):
+        missing = {"news": {"count": 8}}
+        baseline = ss._data_confidence({}, {}, missing, {})
+        for invalid in (-1.01, 1.01, float("nan"), float("-inf"), "garbage"):
+            with self.subTest(value=str(invalid)):
+                rejected = {"news": {"count": 8, "score": invalid}}
+                self.assertEqual(ss.score_sentiment(rejected)["total"],
+                                 ss.score_sentiment(missing)["total"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["l3"],
+                    baseline["l3"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["overall"],
+                    baseline["overall"])
+
+    def test_valid_boundary_values_count_as_evidence(self):
+        for rate in (0.0, 1.0):
+            for compound in (-1.0, 1.0):
+                with self.subTest(rate=rate, compound=compound):
+                    sent = {
+                        "earnings_beats": {"beat_rate": rate, "quarters": 4},
+                        "news": {"score": compound, "count": 2},
+                        "earnings_days_away": 0,
+                    }
+                    result = ss._data_confidence({}, {}, sent, {})
+                    self.assertAlmostEqual(result["l3"], 0.75)
+
+    def test_rejected_evidence_never_increases_decision_score(self):
+        missing = {"earnings_beats": {"quarters": 4},
+                   "news": {"count": 8}}
+        rejected = {"earnings_beats": {"beat_rate": 3, "quarters": 4},
+                    "news": {"score": 2, "count": 8}}
+        missing_conf = ss._data_confidence({}, {}, missing, {})["overall"]
+        invalid_conf = ss._data_confidence({}, {}, rejected, {})["overall"]
+        self.assertEqual(missing_conf, invalid_conf)
+        layers_missing = ss.score_sentiment(missing)["total"]
+        layers_invalid = ss.score_sentiment(rejected)["total"]
+        self.assertEqual(layers_missing, layers_invalid)
+        _, decision_missing = ss._compute_decision_scores(
+            9.0, 9.0, layers_missing, 9.0, institutional_l5=None,
+            data_confidence=missing_conf)
+        _, decision_invalid = ss._compute_decision_scores(
+            9.0, 9.0, layers_invalid, 9.0, institutional_l5=None,
+            data_confidence=invalid_conf)
+        self.assertEqual(decision_missing, decision_invalid)
+
+    def test_negative_earnings_days_not_counted_as_upcoming_risk(self):
+        negative = ss._data_confidence(
+            {}, {}, {"earnings_days_away": -3}, {})
+        missing = ss._data_confidence({}, {}, {}, {})
+        self.assertEqual(negative["l3"], missing["l3"])
+
+
+    def test_l4_rejected_data_never_counts_as_coverage(self):
+        baseline = ss._data_confidence({}, {}, {}, {})
+        rejected = [
+            ("pcr", -0.1), ("w52_position", -0.05),
+            ("w52_position", 1.01), ("insider_buy_ratio", 1.01),
+            ("insider_buy_ratio", -0.1), ("short_ratio", -1),
+            ("sector_etf_score", 11.0), ("sector_etf_score", -1),
+            ("vix_level", -1), ("vix3m_vix_ratio", -0.5),
+            ("pcr", float("nan")), ("yc_spread", float("inf")),
+        ]
+        for key, invalid in rejected:
+            with self.subTest(key=key, invalid=str(invalid)):
+                observed = ss._data_confidence(
+                    {}, {}, {}, {key: invalid})
+                self.assertEqual(observed["l4"], baseline["l4"])
+                self.assertEqual(observed["overall"], baseline["overall"])
+
+    def test_l4_valid_boundary_data_counts_as_coverage(self):
+        baseline = ss._data_confidence({}, {}, {}, {})
+        for key, valid in (
+            ("pcr", 0), ("w52_position", 0), ("w52_position", 1),
+            ("insider_buy_ratio", 0), ("insider_buy_ratio", 1),
+            ("short_ratio", 0), ("sector_etf_score", 0),
+            ("sector_etf_score", 10), ("vix_level", 0),
+            ("vix3m_vix_ratio", 0), ("yc_spread", -250),
+        ):
+            with self.subTest(key=key, valid=valid):
+                observed = ss._data_confidence({}, {}, {}, {key: valid})
+                self.assertGreater(observed["l4"], baseline["l4"])
+
+
+
+class TestFundamentalConfidenceBooleans(unittest.TestCase):
+    """A rejected numeric value must not increase measured financial coverage."""
+
+    FIELDS = (
+        "forward_pe", "roe", "profit_margin", "earnings_growth",
+        "debt_to_equity", "free_cashflow",
+    )
+
+    def test_every_rejected_boolean_equals_missing_in_score_and_confidence(self):
+        baseline_score = ss.score_fundamental({})["total"]
+        baseline_conf = ss._data_confidence({}, {}, {}, {})
+        for field in self.FIELDS:
+            for invalid in (True, False):
+                with self.subTest(field=field, invalid=invalid):
+                    fund = {field: invalid}
+                    self.assertEqual(ss.score_fundamental(fund)["total"], baseline_score)
+                    confidence = ss._data_confidence({}, fund, {}, {})
+                    self.assertEqual(confidence["l2"], baseline_conf["l2"])
+                    self.assertEqual(confidence["overall"], baseline_conf["overall"])
+
+    def test_financial_booleans_are_never_numeric_observations(self):
+        self.assertFalse(ss._score_observed(True))
+        self.assertFalse(ss._score_observed(False))
+        self.assertIsNone(ss._score_number(True))
+        self.assertIsNone(ss._score_number(False))
+
+    def test_real_numeric_values_still_count_as_financial_evidence(self):
+        empty = ss._data_confidence({}, {}, {}, {})["l2"]
+        for field in self.FIELDS:
+            for observed in (0, 1.5, "2.5"):
+                with self.subTest(field=field, observed=observed):
+                    result = ss._data_confidence({}, {field: observed}, {}, {})
+                    self.assertGreater(result["l2"], empty)
+
+    def test_boolean_squeeze_retains_observed_technical_coverage(self):
+        baseline = ss._data_confidence({}, {}, {}, {})["l1"]
+        for flag in (True, False, 1, 0):
+            with self.subTest(flag=flag):
+                technical = ss.score_technical({"sqzOff": flag})
+                self.assertGreater(technical["coverage"], 0)
+                self.assertGreater(
+                    ss._data_confidence({"sqzOff": flag}, {}, {}, {})["l1"],
+                    baseline,
+                )
+
+    def test_rejected_financial_bool_cannot_improve_decision(self):
+        layers = (9.0, 9.0, 9.0, 9.0)
+        empty = ss._data_confidence({}, {}, {}, {})["overall"]
+        expected = ss._compute_decision_scores(
+            *layers, institutional_l5=None, data_confidence=empty)
+        for field in self.FIELDS:
+            for invalid in (True, False):
+                with self.subTest(field=field, invalid=invalid):
+                    confidence = ss._data_confidence(
+                        {}, {field: invalid}, {}, {})["overall"]
+                    actual = ss._compute_decision_scores(
+                        *layers, institutional_l5=None, data_confidence=confidence)
+                    self.assertEqual(actual, expected)
+
+    def test_nonfinite_and_malformed_financial_inputs_also_not_observed(self):
+        baseline = ss._data_confidence({}, {}, {}, {})
+        for field in self.FIELDS:
+            for invalid in (float("nan"), float("inf"), "-inf", "garbage"):
+                with self.subTest(field=field, invalid=str(invalid)):
+                    confidence = ss._data_confidence({}, {field: invalid}, {}, {})
+                    self.assertEqual(confidence["l2"], baseline["l2"])
+                    self.assertEqual(confidence["overall"], baseline["overall"])
+
+
+if __name__ == "__main__":
+    unittest.main()

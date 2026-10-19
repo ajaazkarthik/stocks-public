@@ -311,7 +311,11 @@ def fetch_tv_screener(pro_symbols: list) -> dict:
                 bb_upper = d[12] if len(d) > 12 and d[12] is not None else None
                 bb_lower = d[13] if len(d) > 13 and d[13] is not None else None
                 bb_width_pct = None
-                if bb_upper is not None and bb_lower is not None and close and close > 0:
+                if (bb_upper is not None and bb_lower is not None
+                        and _score_number(bb_upper) is not None
+                        and _score_number(bb_lower) is not None
+                        and _score_number(close, low=0) is not None
+                        and close > 0 and bb_upper >= bb_lower):
                     bb_width_pct = round((bb_upper - bb_lower) / close * 100, 2)
                 results[ps] = {
                     "rel_vol":    d[1] if len(d) > 1 and d[1] is not None else None,
@@ -942,6 +946,35 @@ def compute_news_sentiment(headlines: list[str]) -> dict:
     return result
 
 # ─── LAYER 1: TECHNICAL QUALITY ─────────────────────────────────────────────────
+def _score_number(value, *, low=None, high=None):
+    """Parse a numeric signal; reject booleans, NaN, infinities and invalid ranges.
+
+    Missing and invalid observations both become None, never a perfect score.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if not math.isfinite(number):
+        return None
+    if low is not None and number < low:
+        return None
+    if high is not None and number > high:
+        return None
+    return number
+
+
+def _score_observed(value) -> bool:
+    """A measured numeric value must be finite, and never a Boolean.
+
+    Boolean indicator states are converted to explicit numeric observation
+    markers by the caller; they are not valid financial ratios.
+    """
+    return _score_number(value) is not None
+
+
 def score_technical(meta: dict, screener: dict = None) -> dict:
     """
     Score the WIN strategy signal quality from the fire message.
@@ -952,20 +985,28 @@ def score_technical(meta: dict, screener: dict = None) -> dict:
     When signals are unavailable, weights redistribute to WinRate/NetProfit.
     """
     def norm10(v, good, bad):
-        """Linear scale: good→10, bad→0."""
+        """Linear scale: good→10, bad→0; missing/invalid→neutral."""
+        v = _score_number(v)
         if v is None: return 5.0
         if v >= good: return 10.0
         if v <= bad:  return 0.0
         return round(10 * (v - bad) / (good - bad), 2)
 
-    sc = screener or {}
+    meta = meta or {}
+    sc = dict(screener or {})
+    for key in ("tv_rsi", "tv_adx", "rel_vol", "sma200_pct", "macd_hist",
+                "close", "volatility", "obv_divergence", "bb_width"):
+        sc[key] = _score_number(
+            sc.get(key),
+            low=0 if key in ("rel_vol", "bb_width") else None,
+        )
 
     # WinRate: 80% → 10pts, 20% → 0 (None → neutral 5.0)
-    wr      = meta.get("WinRate")
+    wr      = _score_number(meta.get("WinRate"), low=0, high=100)
     s_wr    = norm10(wr, 80, 20)
 
     # NetProfit%: 50 → 10pts, 0 → 0 (None → neutral 5.0)
-    np_     = meta.get("NetProfit%")
+    np_     = _score_number(meta.get("NetProfit%"))
     s_np    = norm10(np_, 50, 0)
 
     # RSI zone: smooth piecewise-linear to avoid cliff-edge scoring.
@@ -973,7 +1014,9 @@ def score_technical(meta: dict, screener: dict = None) -> dict:
     # New: continuous ramp so a 0.1-point RSI move can't swing the score by 5pts.
     # For news/screener sources the alert message has no rsi field; fall back to
     # tv_rsi fetched via the TV Screener batch call (sc dict).
-    rsi = meta.get("rsi") if meta.get("rsi") is not None else sc.get("tv_rsi")
+    rsi = _score_number(meta.get("rsi"), low=0, high=100)
+    if rsi is None:
+        rsi = _score_number(sc.get("tv_rsi"), low=0, high=100)
     if rsi is None:
         s_rsi = 5.0
     elif rsi <= 40:
@@ -993,15 +1036,21 @@ def score_technical(meta: dict, screener: dict = None) -> dict:
     s_rsi = round(min(10.0, max(1.0, s_rsi)), 2)
 
     # Squeeze Momentum: sqzOff=1 means squeeze energy just released → bullish
-    sqz     = meta.get("sqzOff", 0)
-    s_sqz   = 10.0 if str(sqz).lower() in ("1", "1.0", "true") else 4.0
+    sqz     = meta.get("sqzOff")
+    sqz_val = str(sqz).strip().lower() if sqz is not None else ""
+    if sqz_val in ("1", "1.0", "true"):
+        s_sqz = 10.0
+    elif sqz_val in ("0", "0.0", "false"):
+        s_sqz = 4.0
+    else:
+        s_sqz = 5.0  # missing/invalid ≠ negative breakout evidence
 
     # ADX: >30 = strong trend, good for breakout
     # For news/screener sources, fall back to tv_adx from TV Screener batch data.
-    adx = meta.get("ADX") if meta.get("ADX") is not None else sc.get("tv_adx")
+    adx = _score_number(meta.get("ADX"), low=0, high=100)
     if adx is None:
-        adx = 20  # neutral default when no data available
-    s_adx   = norm10(adx, 35, 15)
+        adx = _score_number(sc.get("tv_adx"), low=0, high=100)
+    s_adx = norm10(adx, 35, 15)  # missing→5.0, without inventing raw ADX=20
 
     # Relative Volume from TV Screener (live, real-time)
     rv = sc.get("rel_vol")
@@ -1119,10 +1168,22 @@ def score_technical(meta: dict, screener: dict = None) -> dict:
         else:
             adj_components.append((name, score, weight))
     all_items = adj_components + available
-    total = round(min(10.0, sum(s * w for _, s, w in all_items)), 2)
+    total = round(min(10.0, max(0.0, sum(s * w for _, s, w in all_items))), 2)
+    # Coverage is measured separately; neutral substitutions do not count as data.
+    # Only measurements actually used in the weighted calculation are counted.
+    availability = {
+        "wr": wr is not None, "np": np_ is not None,
+        "rsi": rsi is not None, "squeeze": sqz_val in
+            ("1", "1.0", "true", "0", "0.0", "false"),
+        "adx": adx is not None,
+    }
+    availability.update({name: score is not None for name, score, _ in optional})
+    observed_weight = sum(w for name, _, w in all_items if availability.get(name, False))
+    coverage = round(min(1.0, max(0.0, observed_weight)), 3)
 
     return {
         "total":   total,
+        "coverage": coverage,
         "wr":      s_wr,
         "np":      s_np,
         "rsi":     s_rsi,
@@ -1200,16 +1261,25 @@ def fetch_fundamentals(ticker: str) -> dict:
     }
 
 def score_fundamental(fund: dict) -> dict:
-    def val(v, good, bad):
-        """Lower is better."""
+    # Prevent non-finite vendor fields propagating into scores or comparisons.
+    fund = dict(fund or {})
+    for key in ("forward_pe", "peg_ratio", "price_to_sales", "ev_revenue",
+                "ev_ebitda", "price_to_book", "roe", "profit_margin",
+                "gross_margin", "earnings_growth", "revenue_growth",
+                "debt_to_equity", "current_ratio", "free_cashflow",
+                "market_cap", "roa", "returnOnAssets"):
+        fund[key] = _score_number(fund.get(key))
+
+    def val(v, good, bad, *, zero_valid=False):
+        """Lower is better; valuation multiples <=0 invalid, but zero debt is ideal."""
         if v is None: return 5.0
-        if v <= 0: return 0.0
+        if v < 0 or (v == 0 and not zero_valid): return 0.0
         if v <= good: return 10.0
         if v >= bad:  return 0.0
         return round(10 * (bad - v) / (bad - good), 2)
 
     def hi(v, good, bad):
-        """Higher is better."""
+        """Higher is better, with missing/invalid observations neutral."""
         if v is None: return 5.0
         if v >= good: return 10.0
         if v <= bad:  return 0.0
@@ -1271,8 +1341,8 @@ def score_fundamental(fund: dict) -> dict:
     de     = fund.get("debt_to_equity")
     cr     = fund.get("current_ratio")
     fcf    = fund.get("free_cashflow")
-    s_de   = val(de, 30, 200)
-    s_cr   = hi(cr, 2.5, 0.5) if cr else 5.0
+    s_de   = val(de, 30, 200, zero_valid=True)
+    s_cr   = hi(cr, 2.5, 0.5) if cr is not None else 5.0
     s_fcf  = 10.0 if (fcf and fcf > 0) else (0.0 if (fcf and fcf < 0) else 5.0)
     s_hlth = round(s_de*0.4 + s_cr*0.3 + s_fcf*0.3, 2)
 
@@ -1292,31 +1362,26 @@ def score_fundamental(fund: dict) -> dict:
     #   4. Current ratio > 1.0 (liquidity)
     #   5. Gross margin > 30%
     #   6. Revenue growth > 0
-    piotroski = 0
-    piotroski_max = 6
-    if fcf and fcf > 0:
-        piotroski += 1
-    roa_val = fund.get("roa") or fund.get("returnOnAssets")
-    if roa_val is not None and roa_val > 0:
-        piotroski += 1
-    roe_val = fund.get("roe")
-    if roe_val is not None and roe_val > 10:
-        piotroski += 1
-    cr_val = fund.get("current_ratio")
-    if cr_val is not None and cr_val > 1.0:
-        piotroski += 1
-    gm_val = fund.get("gross_margin")
-    if gm_val is not None and gm_val > 30:
-        piotroski += 1
-    # Growth criterion: revenue growth when known, else EPS growth, so the
-    # point is not silently unreachable wherever revenue growth is unavailable.
+    # Distinguish an observed failed criterion from one we could not measure.
+    # Scale sparse evidence to neutral via its fraction of the six criteria:
+    # zero observed→5, all six observed→original 0–10 score.
+    roa_val = fund.get("roa")
+    if roa_val is None:
+        roa_val = fund.get("returnOnAssets")
     rg_val = fund.get("revenue_growth")
     if rg_val is None:
         rg_val = fund.get("earnings_growth")
-    if rg_val is not None and rg_val > 0:
-        piotroski += 1
-    # Map 0-6 → 0-10 score
-    s_piotroski = round(piotroski / piotroski_max * 10, 2)
+    criteria = (
+        (fcf, 0), (roa_val, 0), (fund.get("roe"), 10),
+        (fund.get("current_ratio"), 1),
+        (fund.get("gross_margin"), 30), (rg_val, 0),
+    )
+    piotroski_observed = sum(value is not None for value, _ in criteria)
+    piotroski = sum(value is not None and value > threshold
+                    for value, threshold in criteria)
+    piotroski_coverage = round(piotroski_observed / 6.0, 3)
+    s_piotroski = round(5.0 + (10.0 * piotroski -
+                             5.0 * piotroski_observed) / 6.0, 2)
 
     # ── Enhanced total: add FCF yield (8%) and Piotroski (7%) to the mix
     # If FCF yield unavailable, its weight goes to profitability (strongest base)
@@ -1337,6 +1402,8 @@ def score_fundamental(fund: dict) -> dict:
     return {"total":total, "valuation":s_val, "profitability":s_prof,
             "growth":s_grow, "health":s_hlth,
             "fcf_yield": s_fcf_yield, "piotroski": s_piotroski,
+            "piotroski_coverage": piotroski_coverage,
+            "piotroski_observed": piotroski_observed,
             "raw_fcf_yield": fcf_yield, "raw_piotroski": piotroski}
 
 # ─── EXCHANGE DETECTION ─────────────────────────────────────────────────────────
@@ -1705,16 +1772,9 @@ def fetch_sentiment_data(ticker_obj, company_name: str, tv_symbol: str,
             "consensus": _consensus_label(bull_ratio),
             "source": "TV",
         }
-    elif rec_all is not None:
-        # Recommend.All: -1 → 0, 0 → 1, +1 → 2 (maps to same 0-2 bull_ratio)
-        bull_ratio = round(float(rec_all) + 1.0, 3)
-        tv_analyst = {
-            "strongBuy": 0, "buy": 0, "hold": 0, "sell": 0, "strongSell": 0,
-            "total": 0,
-            "bull_ratio": bull_ratio,
-            "consensus": _consensus_label(bull_ratio),
-            "source": "TV",
-        }
+    # Recommend.All is a *technical indicator* rating, not analyst consensus.
+    # It must not masquerade as analyst evidence inside the sentiment layer.
+    # Keep rec_all available elsewhere for technical studies, not here.
 
     # FALLBACK: yfinance full count breakdown (US only — overrides TV if richer)
     yf_analyst: dict | None = None
@@ -1756,7 +1816,7 @@ def fetch_sentiment_data(ticker_obj, company_name: str, tv_symbol: str,
     elif tv_analyst is not None:
         result["analyst"] = tv_analyst
     else:
-        result["analyst"] = {"bull_ratio": 0.5, "consensus": "N/A", "total": 0}
+        result["analyst"] = {"bull_ratio": None, "consensus": "N/A", "total": 0}
 
     # ── 3b. Recent Upgrades/Downgrades (last 30 days) ─────────────────────────
     # yfinance only — TV Screener has no upgrade/downgrade event feed.
@@ -1989,8 +2049,15 @@ def fetch_sentiment_data(ticker_obj, company_name: str, tv_symbol: str,
 def score_sentiment(sent: dict) -> dict:
     # ── 3a Analyst score (0–10): bull_ratio 0→0, 1→5, 2→10 ──
     # Smooth mapping instead of hard cap: ratio × 5 with diminishing returns
-    br = sent.get("analyst", {}).get("bull_ratio", 0.5)
-    s_analyst = min(10.0, round(br * 5, 2))
+    sent = sent or {}
+    analyst = sent.get("analyst") or {}
+    br = _score_number(analyst.get("bull_ratio"), low=0, high=2)
+    total_analysts = _score_number(analyst.get("total"), low=0)
+    has_analyst = br is not None and (
+        (total_analysts is not None and total_analysts > 0)
+        or analyst.get("source") == "TV"
+    )
+    s_analyst = round(br * 5, 2) if has_analyst else 5.0
 
     # ── 3b Recent upgrade/downgrade modifier ──
     # Expanded to 60-day window; scale by recency
@@ -1998,9 +2065,11 @@ def score_sentiment(sent: dict) -> dict:
                  (-2.0 if sent.get("recent_downgrade") else 0.0))
 
     # ── 3c Earnings beat rate — weight recent beats more ──
-    eb = sent.get("earnings_beats", {})
-    beat_rate = eb.get("beat_rate", 0.5)
-    quarters  = eb.get("quarters", 0)
+    eb = sent.get("earnings_beats") or {}
+    beat_rate = _score_number(eb.get("beat_rate"), low=0, high=1)
+    quarters = _score_number(eb.get("quarters"), low=0)
+    beat_rate = 0.5 if beat_rate is None else beat_rate
+    quarters = 0 if quarters is None else quarters
     # Confidence scaling: more quarters = more reliable
     # With only 1-2 quarters of data, pull toward neutral (5.0)
     raw_beats = round(beat_rate * 10, 2)
@@ -2011,7 +2080,7 @@ def score_sentiment(sent: dict) -> dict:
         s_beats = raw_beats
 
     # ── 3d Earnings risk penalty — softer gradient ──
-    days = sent.get("earnings_days_away")
+    days = _score_number(sent.get("earnings_days_away"))
     if days is not None and days >= 0:
         if   days < 7:  s_earnings_risk = -2.5   # was -3.0: too harsh
         elif days < 14: s_earnings_risk = -1.5
@@ -2021,8 +2090,9 @@ def score_sentiment(sent: dict) -> dict:
         s_earnings_risk = 0.0
 
     # ── 3e News sentiment: compound -1→+1, map to 0–10 ──
-    news_data  = sent.get("news", {})
-    nc         = news_data.get("score", 0.0)
+    news_data  = sent.get("news") or {}
+    nc = _score_number(news_data.get("score"), low=-1, high=1)
+    nc = 0.0 if nc is None else nc
     s_news_raw = round((nc + 1) * 5, 2)   # -1→0, 0→5, +1→10
 
     # Soros reflexivity — news velocity boost
@@ -2034,6 +2104,8 @@ def score_sentiment(sent: dict) -> dict:
     if news_count is None:
         # Backward-compatible fallback for callers that only supply "count".
         news_count = news_data.get("count", 0)
+    news_count = _score_number(news_count, low=0)
+    news_count = 0 if news_count is None else news_count
     velocity_boost = min(5, max(0, news_count - 5))   # 0 at ≤5, caps at 5 extra
     # Weight shift: each extra headline beyond 5 shifts 1% from analyst→news
     # analyst base: 45%, news base: 25%; max shift = 5% → analyst 40%, news 30%
@@ -2050,8 +2122,8 @@ def score_sentiment(sent: dict) -> dict:
     # Stocks that beat/miss estimates show directional drift for 1-3 months.
     # Only applies to US stocks where earnings_history is available (<90 days old).
     pead_bonus = 0.0
-    last_sp  = eb.get("last_surprise_pct")
-    days_rep = eb.get("days_since_report")
+    last_sp  = _score_number(eb.get("last_surprise_pct"))
+    days_rep = _score_number(eb.get("days_since_report"))
     if last_sp is not None and days_rep is not None and 0 <= days_rep <= 90:
         if   last_sp >  0.10:  pead_bonus =  1.0   # big beat  → strong drift signal
         elif last_sp >  0.02:  pead_bonus =  0.5   # small beat
@@ -2061,7 +2133,8 @@ def score_sentiment(sent: dict) -> dict:
     # ── Idea 4: Revision Momentum bonus — net analyst upgrade velocity ──
     # Counting net upgrades/downgrades in 30 days (not just boolean flag).
     # Reflects analyst conviction building: 3+ upgrades → sector momentum confirms.
-    rev_vel = sent.get("revision_velocity", 0)
+    rev_vel = _score_number(sent.get("revision_velocity"))
+    rev_vel = 0 if rev_vel is None else rev_vel
     if   rev_vel >= 3:  revision_bonus =  1.5
     elif rev_vel == 2:  revision_bonus =  1.0
     elif rev_vel == 1:  revision_bonus =  0.5
@@ -2078,6 +2151,13 @@ def score_sentiment(sent: dict) -> dict:
     total = max(0.0, min(10.0, round(total, 2)))
     return {
         "total":           total,
+        "coverage": round(
+            w_analyst * float(has_analyst) +
+            w_beats * float(quarters > 0 and _score_number(eb.get("beat_rate"), low=0, high=1) is not None) +
+            w_news * float((_score_number(news_data.get("count"), low=0) or 0) > 0
+                           and _score_number(news_data.get("score"), low=-1, high=1) is not None),
+            3,
+        ),
         "analyst":         s_analyst,
         "upgrade_mod":     s_upgrade,
         "earnings_beat":   s_beats,
@@ -2318,8 +2398,18 @@ def fetch_market_internals(ticker_obj, fund: dict, tv_symbol: str = "",
 
 def score_market_internals(internals: dict, yc: dict = None,
                            vix_level: float = None) -> dict:
+    internals = internals or {}
+    # Sanitize vendor numbers before any thresholds, weights or availability flags.
+    # Preserve L4's existing conservative coverage shrinkage until calibrated.
+    pcr = _score_number(internals.get("pcr"), low=0)
+    insider_raw = _score_number(internals.get("insider_score_raw"), low=0, high=10)
+    pos = _score_number(internals.get("w52_position"), low=0, high=1)
+    spread = _score_number((yc or {}).get("spread_bps"))
+    vix_level = _score_number(vix_level, low=0)
+    vix3m_vix = _score_number(internals.get("vix3m_vix_ratio"), low=0)
+    raw_sector_score = _score_number(internals.get("sector_etf_score"), low=0, high=10)
+    short_raw = _score_number(internals.get("short_score_raw"), low=0, high=10)
     # ── 4a PCR: <0.5=10, 0.5-0.8=8, 0.8-1.2=5, 1.2-1.5=3, >1.5=1 ──
-    pcr = internals.get("pcr")
     if pcr is None:
         s_pcr = 5.0
     elif pcr < 0.5:  s_pcr = 10.0
@@ -2329,10 +2419,9 @@ def score_market_internals(internals: dict, yc: dict = None,
     else:             s_pcr = 1.0
 
     # ── 4b Insider score 0–10 from buy_ratio ──
-    s_insider = internals.get("insider_score_raw", 5.0)
+    s_insider = insider_raw if insider_raw is not None else 5.0
 
     # ── 4c 52W position: momentum stocks near highs continue, buy-the-dip at 30-50% ──
-    pos = internals.get("w52_position")
     if pos is None:
         s_w52 = 5.0
     elif 0.50 <= pos <= 0.85:  s_w52 = 10.0  # momentum sweet spot
@@ -2343,7 +2432,6 @@ def score_market_internals(internals: dict, yc: dict = None,
     else:                       s_w52 = 2.0   # near 52W low — falling knife risk
 
     # ── 4d Yield curve (macro regime) — structural signal ──
-    spread = (yc or {}).get("spread_bps")
     if spread is None:
         s_yc = 5.0   # neutral when data unavailable
     elif spread < -25:
@@ -2376,7 +2464,6 @@ def score_market_internals(internals: dict, yc: dict = None,
     # VIX3M/VIX > 1.0 = contango = normal, calm markets
     # VIX3M/VIX < 1.0 = backwardation = fear, short-term risk exceeds long-term
     # This is a leading indicator — backwardation often precedes sell-offs
-    vix3m_vix = internals.get("vix3m_vix_ratio")
     if vix3m_vix is not None:
         if   vix3m_vix > 1.15:   s_vix_ts = 9.0   # strong contango — very bullish backdrop
         elif vix3m_vix > 1.05:   s_vix_ts = 8.0   # normal contango — favorable
@@ -2388,27 +2475,26 @@ def score_market_internals(internals: dict, yc: dict = None,
 
     # ── 4f Sector ETF momentum (US sectors via SPDR ETFs vs SMA-200) ──────────
     # Non-US symbols (NSE, ASX) have no matching sector ETF → neutral 5.0.
-    raw_sector_score = internals.get("sector_etf_score")
     s_sector_etf = raw_sector_score if raw_sector_score is not None else 5.0
 
     # ── 4g Short Interest (US only, Boehmer 2010) ─────────────────────────────
     # Low short interest = extraordinary positive abnormal returns.
     # Non-US stocks default to neutral (5.0) since data is unavailable.
-    s_short = internals.get("short_score_raw", 5.0)
+    s_short = short_raw if short_raw is not None else 5.0
 
     # Weights: PCR 24%, Insider 18%, 52W 18%, Macro(VIX+YC) 18%, SectorETF 10%, ShortInt 12%
     # With VIX term structure: PCR 22%, Insider 16%, 52W 16%, Macro 16%, SectorETF 9%, ShortInt 11%, VIX_TS 10%
     # If VIX_TS unavailable, fall back to original weights
-    pcr_available = internals.get("pcr_available", pcr is not None)
-    insider_available = internals.get(
+    pcr_available = bool(internals.get("pcr_available", pcr is not None)) and pcr is not None
+    insider_available = bool(internals.get(
         "insider_available", "insider_score_raw" in internals
-    )
+    )) and insider_raw is not None
     w52_available = pos is not None
     macro_available = vix_level is not None or spread is not None
     sector_available = raw_sector_score is not None
-    short_available = internals.get(
+    short_available = bool(internals.get(
         "short_available", internals.get("short_ratio") is not None
-    )
+    )) and short_raw is not None
 
     if s_vix_ts is not None:
         raw_total = round(
@@ -2538,7 +2624,7 @@ def _composite_components(l1, l2, l3, l4, l5=None, l6=None, l7=None,
 
 WATCH_MIN_COMPOSITE = 50.0
 WATCH_MAX_COMPOSITE = 60.0
-SCORE_MODEL_VERSION = "signal-stack-2026.08.19.1"
+SCORE_MODEL_VERSION = "signal-stack-2026.10.19.phase12"
 
 # Providers report funds/ETFs with null equity fundamentals, so L2 scores them on
 # a neutral fallback that reads as an average business instead of missing data.
@@ -2732,33 +2818,70 @@ def _data_confidence(meta: dict, fund: dict, sent: dict, internals: dict,
     """Return per-layer observed-data coverage without changing the score."""
     sc = screener or {}
 
-    def coverage(values: list[object]) -> float:
-        return round(sum(value is not None for value in values) / len(values), 3)
+    meta, fund, sent, internals = (meta or {}), (fund or {}), (sent or {}), (internals or {})
 
+    def coverage(values: list[object]) -> float:
+        return round(sum(_score_observed(value) for value in values) / len(values), 3)
+
+    rsi = _score_number(meta.get("rsi"), low=0, high=100)
+    adx = _score_number(meta.get("ADX"), low=0, high=100)
+    sqz = meta.get("sqzOff")
+    sqz_valid = str(sqz).strip().lower() in ("1", "1.0", "true", "0", "0.0", "false")
     l1 = coverage([
-        meta.get("WinRate"), meta.get("NetProfit%"), meta.get("rsi"),
-        meta.get("ADX"), meta.get("sqzOff"), sc.get("rel_vol"),
-        sc.get("sma200_pct"), sc.get("macd_hist"), sc.get("bb_width"),
+        _score_number(meta.get("WinRate"), low=0, high=100),
+        _score_number(meta.get("NetProfit%")),
+        rsi if rsi is not None else _score_number(sc.get("tv_rsi"), low=0, high=100),
+        adx if adx is not None else _score_number(sc.get("tv_adx"), low=0, high=100),
+        1.0 if sqz_valid else None,
+        _score_number(sc.get("rel_vol"), low=0),
+        _score_number(sc.get("sma200_pct")),
+        _score_number(sc.get("macd_hist")),
+        _score_number(sc.get("bb_width"), low=0),
     ])
+    # Score_fundamental sanitizes these six fields through _score_number.
+    # Use the same normalization for confidence: True/False, NaN and other
+    # rejected values must be indistinguishable from missing observations.
     l2 = coverage([
-        fund.get("forward_pe"), fund.get("roe"), fund.get("profit_margin"),
-        fund.get("earnings_growth"),
-        fund.get("debt_to_equity"), fund.get("free_cashflow"),
+        _score_number(fund.get("forward_pe")),
+        _score_number(fund.get("roe")),
+        _score_number(fund.get("profit_margin")),
+        _score_number(fund.get("earnings_growth")),
+        _score_number(fund.get("debt_to_equity")),
+        _score_number(fund.get("free_cashflow")),
     ])
     analyst = sent.get("analyst") or {}
     earnings = sent.get("earnings_beats") or {}
     news = sent.get("news") or {}
+    br = _score_number(analyst.get("bull_ratio"), low=0, high=2)
+    count = _score_number(analyst.get("total"), low=0)
+    analyst_observed = br is not None and (
+        (count is not None and count > 0) or analyst.get("source") == "TV"
+    )
+    # Apply the *same admissibility rules* as score_sentiment.  Merely
+    # finite is not enough: a 150% beat rate or +2 news compound is rejected
+    # by L3 and must not make its decision score more confident.
+    beat_rate = _score_number(earnings.get("beat_rate"), low=0, high=1)
+    quarters = _score_number(earnings.get("quarters"), low=0)
+    news_score = _score_number(news.get("score"), low=-1, high=1)
+    news_count = _score_number(news.get("count"), low=0)
+    earnings_days = _score_number(sent.get("earnings_days_away"), low=0)
     l3 = coverage([
-        analyst.get("bull_ratio") if analyst.get("total", 0) else None,
-        earnings.get("beat_rate") if earnings.get("quarters", 0) else None,
-        news.get("score") if news.get("count", 0) else None,
-        sent.get("earnings_days_away"),
+        br if analyst_observed else None,
+        beat_rate if quarters is not None and quarters > 0 else None,
+        news_score if news_count is not None and news_count > 0 else None,
+        earnings_days,
     ])
+    # L4 must not award confidence for values the internals scorer rejects.
+    # The scoring and coverage ranges use the same finite-input policy.
     l4 = coverage([
-        internals.get("pcr"), internals.get("insider_buy_ratio"),
-        internals.get("w52_position"), internals.get("short_ratio"),
-        internals.get("sector_etf_score"), internals.get("vix_level"),
-        internals.get("yc_spread"), internals.get("vix3m_vix_ratio"),
+        _score_number(internals.get("pcr"), low=0),
+        _score_number(internals.get("insider_buy_ratio"), low=0, high=1),
+        _score_number(internals.get("w52_position"), low=0, high=1),
+        _score_number(internals.get("short_ratio"), low=0),
+        _score_number(internals.get("sector_etf_score"), low=0, high=10),
+        _score_number(internals.get("vix_level"), low=0),
+        _score_number(internals.get("yc_spread")),
+        _score_number(internals.get("vix3m_vix_ratio"), low=0),
     ])
     overall = round(l1 * 0.35 + l2 * 0.25 + l3 * 0.20 + l4 * 0.20, 3)
     return {"overall": overall, "l1": l1, "l2": l2, "l3": l3, "l4": l4}
