@@ -14,6 +14,7 @@ import ast
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 import math
 from pathlib import Path
 import random
@@ -74,6 +75,12 @@ def load_jsonl(path):
     if not rows:
         raise ValueError(f"{path.name}: zero records; refusing success-shaped empty report")
     return rows
+
+
+def git_blob_sha(data):
+    """Compute the Git object ID, not a normal file SHA-1 digest."""
+    return hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                        + b"\0" + data).hexdigest()
 
 
 def engine_from_source(path):
@@ -269,6 +276,45 @@ def cluster_ci(rows, *, draws=N_BOOT):
             round(samples[int(.975*(len(samples)-1))], 4)]
 
 
+def score_bands(rows, model):
+    """Descriptive return calibration, suppressed for thin bands."""
+    edges = ((0, 50), (50, 60), (60, 70), (70, 80), (80, 101))
+    result = {}
+    for lower, upper in edges:
+        matched = [r for r in rows
+                   if lower <= r[model]["decision"] < upper]
+        benchmarked = [r for r in matched if r["excess"] is not None]
+        sufficiently_observed = (len(benchmarked) >= 10
+                                  and len({r["symbol"] for r in benchmarked}) >= 5)
+        result[f"{lower}-{upper}"] = {
+            "count": len(matched), "benchmarked": len(benchmarked),
+            "excess_pct": avg([r["excess"] for r in benchmarked])
+                         if sufficiently_observed else None,
+            "win_rate": avg([float(r["return_pct"] > 0) for r in benchmarked])
+                        if sufficiently_observed else None,
+        }
+    return result
+
+
+def coverage_bands(rows):
+    """Assess whether corrections work differently across observed-data levels."""
+    edges = ((0.0, 0.5, "sparse"), (0.5, 0.8, "partial"),
+             (0.8, 1.00001, "well_observed"))
+    output = {}
+    for low, high, label in edges:
+        matched = [r for r in rows if low <= r["new"]["confidence"] < high]
+        valid = [r for r in matched if r["excess"] is not None]
+        output[label] = {
+            "count": len(matched), "benchmarked": len(valid),
+            "distinct_symbols": len({r["symbol"] for r in valid}),
+            "new_minus_old_top_excess_pct": round(top_gap(valid), 4)
+                if (len(valid) >= MIN_ALERTS
+                    and len({r["symbol"] for r in valid}) >= MIN_SYMBOLS
+                    and top_gap(valid) is not None) else None,
+        }
+    return output
+
+
 def group_result(rows):
     """Score/rank comparisons; performance withheld until sufficient samples."""
     valid = [r for r in rows if r["excess"] is not None]
@@ -288,6 +334,11 @@ def group_result(rows):
         "gate_crossings_down": sum(r["new"]["decision"] < SCORE_GATE <= r["old"]["decision"] for r in rows),
         "decision_changed": sum(r["old"]["decision"] != r["new"]["decision"] for r in rows),
         "status": "EVALUABLE" if eligible else "INSUFFICIENT_DATA",
+        "score_bands": {
+            "old": score_bands(rows, "old"),
+            "new": score_bands(rows, "new"),
+        },
+        "coverage_bands": coverage_bands(rows),
     }
     if not eligible:
         result["performance"] = None
@@ -424,6 +475,12 @@ def main(argv=None):
             raise ValueError("historical requires --outcomes AND --cutoff")
         if args.mode == "shadow" and (args.outcomes or args.cutoff):
             raise ValueError("shadow forbids outcomes/cutoff to avoid outcome leakage")
+        baseline_bytes = args.baseline_source.read_bytes()
+        expected_blob = "d02df819c67385cd22a406649855dad73d68eac4"
+        if git_blob_sha(baseline_bytes) != expected_blob:
+            raise ValueError(
+                "baseline source is not the exact public f3925b3 snapshot; "
+                "the previous-model comparison would be untrustworthy")
         old = engine_from_source(args.baseline_source)
         new = engine_from_source(args.candidate_source)
         signals = load_jsonl(args.snapshots)
