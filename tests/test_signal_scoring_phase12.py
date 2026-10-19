@@ -367,5 +367,74 @@ class TestAstraSecondReviewFindings(unittest.TestCase):
 
 
 
+class TestFundamentalConfidenceBooleans(unittest.TestCase):
+    """A rejected numeric value must not increase measured financial coverage."""
+
+    FIELDS = (
+        "forward_pe", "roe", "profit_margin", "earnings_growth",
+        "debt_to_equity", "free_cashflow",
+    )
+
+    def test_every_rejected_boolean_equals_missing_in_score_and_confidence(self):
+        baseline_score = ss.score_fundamental({})["total"]
+        baseline_conf = ss._data_confidence({}, {}, {}, {})
+        for field in self.FIELDS:
+            for invalid in (True, False):
+                with self.subTest(field=field, invalid=invalid):
+                    fund = {field: invalid}
+                    self.assertEqual(ss.score_fundamental(fund)["total"], baseline_score)
+                    confidence = ss._data_confidence({}, fund, {}, {})
+                    self.assertEqual(confidence["l2"], baseline_conf["l2"])
+                    self.assertEqual(confidence["overall"], baseline_conf["overall"])
+
+    def test_financial_booleans_are_never_numeric_observations(self):
+        self.assertFalse(ss._score_observed(True))
+        self.assertFalse(ss._score_observed(False))
+        self.assertIsNone(ss._score_number(True))
+        self.assertIsNone(ss._score_number(False))
+
+    def test_real_numeric_values_still_count_as_financial_evidence(self):
+        empty = ss._data_confidence({}, {}, {}, {})["l2"]
+        for field in self.FIELDS:
+            for observed in (0, 1.5, "2.5"):
+                with self.subTest(field=field, observed=observed):
+                    result = ss._data_confidence({}, {field: observed}, {}, {})
+                    self.assertGreater(result["l2"], empty)
+
+    def test_boolean_squeeze_retains_observed_technical_coverage(self):
+        baseline = ss._data_confidence({}, {}, {}, {})["l1"]
+        for flag in (True, False, 1, 0):
+            with self.subTest(flag=flag):
+                technical = ss.score_technical({"sqzOff": flag})
+                self.assertGreater(technical["coverage"], 0)
+                self.assertGreater(
+                    ss._data_confidence({"sqzOff": flag}, {}, {}, {})["l1"],
+                    baseline,
+                )
+
+    def test_rejected_financial_bool_cannot_improve_decision(self):
+        layers = (9.0, 9.0, 9.0, 9.0)
+        empty = ss._data_confidence({}, {}, {}, {})["overall"]
+        expected = ss._compute_decision_scores(
+            *layers, institutional_l5=None, data_confidence=empty)
+        for field in self.FIELDS:
+            for invalid in (True, False):
+                with self.subTest(field=field, invalid=invalid):
+                    confidence = ss._data_confidence(
+                        {}, {field: invalid}, {}, {})["overall"]
+                    actual = ss._compute_decision_scores(
+                        *layers, institutional_l5=None, data_confidence=confidence)
+                    self.assertEqual(actual, expected)
+
+    def test_nonfinite_and_malformed_financial_inputs_also_not_observed(self):
+        baseline = ss._data_confidence({}, {}, {}, {})
+        for field in self.FIELDS:
+            for invalid in (float("nan"), float("inf"), "-inf", "garbage"):
+                with self.subTest(field=field, invalid=str(invalid)):
+                    confidence = ss._data_confidence({}, {field: invalid}, {}, {})
+                    self.assertEqual(confidence["l2"], baseline["l2"])
+                    self.assertEqual(confidence["overall"], baseline["overall"])
+
+
 if __name__ == "__main__":
     unittest.main()
