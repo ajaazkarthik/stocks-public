@@ -1,0 +1,14 @@
+# Public-review snapshot: intentionally excludes runtime data and credentials.
+.env*
+*.db
+*.sqlite*
+*.csv
+*.xlsx
+*.log
+*.pdf
+*.pkl
+*.pickle
+*.pyc
+__pycache__/
+.venv/
+node_modules/

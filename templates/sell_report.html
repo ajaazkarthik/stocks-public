@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sell Strategy Report — {{ generated_at }}</title>
+<style>
+{% raw %}
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f1a; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, sans-serif;
+          padding: 24px; max-width: 1400px; margin: 0 auto; }
+  h1   { color: #fff; font-size: 1.6rem; margin-bottom: 4px; }
+  .sub { color: #888; font-size: 0.85rem; margin-bottom: 20px; }
+  a    { color: #3a86ff; text-decoration: none; }
+  /* Card classes — extracted from render_card() inline styles */
+  .card { background:#1a1a2e;border:1px solid #2d2d4e;border-radius:12px;
+          padding:20px;margin-bottom:20px;font-family:'Segoe UI',sans-serif;color:#e0e0e0 }
+  .card-hdr { display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px }
+  .card-hdr-right { display:flex;align-items:center;gap:14px;flex-wrap:wrap }
+  .card-sym { font-size:1.4rem;font-weight:700;color:#fff }
+  .card-meta { color:#888;font-size:0.85rem;margin-left:10px }
+  .card-reason { background:#0d0d20;padding:8px 14px;border-radius:4px;margin-bottom:14px;color:#ccc;font-size:0.9rem }
+  .badge { padding:3px 10px;border-radius:12px;font-size:0.8rem;font-weight:600 }
+  .badge-sm { padding:2px 8px;border-radius:8px;font-size:0.78rem;font-weight:600 }
+  .detail-grid { display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px }
+  .sec-label { color:#888;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px }
+  .detail-tbl { width:100%;font-size:0.85rem;border-collapse:collapse }
+  .detail-tbl td:first-child { color:#aaa;padding:3px 10px 3px 0 }
+  .detail-tbl td:nth-child(2) { padding:3px 0 }
+  .detail-tbl td:last-child { padding:3px 0 3px 12px;font-weight:700 }
+  .hold-row { display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+              background:#0d0d20;padding:8px 14px;border-radius:6px;
+              margin-bottom:10px;border:1px solid #2d2d4e }
+  .val-lg { font-size:1.1rem;font-weight:700 }
+  .val-gain { font-size:1.1rem;font-weight:600 }
+  .hedge-box { border-radius:6px;padding:8px 14px;margin-bottom:10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px }
+  .hedge-title { font-weight:700;font-size:0.82rem }
+  .hedge-code { padding:2px 7px;border-radius:4px;font-size:0.82rem }
+  .decay-sec { margin-top:10px;font-size:0.82rem;color:#aaa }
+  .growth-sec { display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding-left:10px;border-left:1px solid #2d2d4e }
+  .sz-btn.active  { border-width:2px !important; box-shadow:0 0 6px currentColor; }
+  .dec-btn.active { border-width:2px !important; box-shadow:0 0 6px currentColor; }
+  .gr-btn.active  { border-width:2px !important; box-shadow:0 0 6px currentColor; }
+  .sort-bar { display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px }
+  .srt-btn  { background:#1a1a2e;border:1px solid #3a3a5c;color:#aaa;padding:5px 14px;
+               border-radius:6px;font-size:0.82rem;cursor:pointer;transition:all .15s }
+  .srt-btn.active { border-color:#3a86ff;color:#3a86ff;box-shadow:0 0 5px #3a86ff55 }
+{% endraw %}
+</style>
+<script>
+{% raw %}
+var _activeSizeFilter     = 'ALL';
+var _activeDecisionFilter = 'ALL';
+var _activeActionFilter   = 'ALL';
+var _activeGradeFilter    = 'ALL';
+var _decisionCatMap = {
+  'TAKE_PROFIT_MAJOR':   'TAKE_PROFIT',
+  'TAKE_PROFIT_PARTIAL': 'TAKE_PROFIT'
+};
+function _getDecisionCat(card) {
+  var pa = card.getAttribute('data-profit-action') || 'HOLD_GAINS';
+  var sa = card.getAttribute('data-scaling-action') || 'HOLD_SIZE';
+  if (sa === 'PYRAMID_BLOCKED') return 'PYRAMID_BLOCKED';
+  if (_decisionCatMap[pa]) return _decisionCatMap[pa];
+  if (sa === 'PYRAMID_ADD') return 'PYRAMID_ADD';
+  if (sa === 'AVG_DOWN')    return 'AVG_DOWN';
+  return 'HOLD';
+}
+function _applyFilters() {
+  var visible = 0, total = 0;
+  document.querySelectorAll('[data-quality]').forEach(function(c) {
+    total++;
+    var qOk = (_activeSizeFilter     === 'ALL' || c.getAttribute('data-quality') === _activeSizeFilter);
+    var dOk = (_activeDecisionFilter === 'ALL' || _getDecisionCat(c) === _activeDecisionFilter);
+    var aOk = (_activeActionFilter   === 'ALL' || c.getAttribute('data-action') === _activeActionFilter);
+    var gOk = (_activeGradeFilter    === 'ALL' || c.getAttribute('data-grade')   === _activeGradeFilter);
+    var sOk = !c._searchHidden;
+    var show = qOk && dOk && aOk && gOk && sOk;
+    c.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var mc = document.getElementById('matchCount');
+  if (mc) mc.textContent = (visible < total) ? visible + ' / ' + total + ' shown' : '';
+}
+function filterSearch() {
+  var q = document.getElementById('searchInput').value.toLowerCase();
+  document.querySelectorAll('[data-symbol]').forEach(function(c) {
+    var sym    = (c.getAttribute('data-symbol') || '').toLowerCase();
+    var broker = (c.getAttribute('data-broker') || '').toLowerCase();
+    c._searchHidden = q && sym.indexOf(q) === -1 && broker.indexOf(q) === -1;
+  });
+  _applyFilters();
+}
+function filterSize(btn, q) {
+  _activeSizeFilter = q;
+  document.querySelectorAll('.sz-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  _applyFilters();
+}
+function filterDecision(btn, q) {
+  _activeDecisionFilter = q;
+  document.querySelectorAll('.dec-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  _applyFilters();
+}
+function filterGrade(btn, g) {
+  _activeGradeFilter = g;
+  document.querySelectorAll('.gr-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  _applyFilters();
+}
+function filterAction(btn, q) {
+  if (_activeActionFilter === q) {
+    _activeActionFilter = 'ALL';
+    document.querySelectorAll('.act-btn').forEach(function(b) { b.style.opacity='1'; });
+  } else {
+    _activeActionFilter = q;
+    document.querySelectorAll('.act-btn').forEach(function(b) { b.style.opacity = (b === btn) ? '1' : '0.35'; });
+  }
+  _applyFilters();
+}
+function sortCards(btn, mode) {
+  document.querySelectorAll('.srt-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  var container = document.getElementById('cards-container');
+  var cards = Array.from(container.children);
+  var _aOrder = {'SELL':0,'REDUCE':1,'REVIEW':2,'TRAIL':3,'HOLD':4};
+  cards.sort(function(a, b) {
+    if (mode === 'urgency') {
+      var ao = _aOrder[a.getAttribute('data-action')] ?? 5;
+      var bo = _aOrder[b.getAttribute('data-action')] ?? 5;
+      return ao - bo;
+    } else if (mode === 'gain') {
+      return parseFloat(a.getAttribute('data-gain')||'0') - parseFloat(b.getAttribute('data-gain')||'0');
+    } else if (mode === 'r_multiple') {
+      return parseFloat(a.getAttribute('data-r')||'0') - parseFloat(b.getAttribute('data-r')||'0');
+    } else if (mode === 'conviction') {
+      return parseFloat(b.getAttribute('data-conviction')||'0') - parseFloat(a.getAttribute('data-conviction')||'0');
+    } else if (mode === 'held') {
+      return parseInt(a.getAttribute('data-held-days')||'0') - parseInt(b.getAttribute('data-held-days')||'0');
+    } else if (mode === 'broker') {
+      return (a.getAttribute('data-broker')||'').localeCompare(b.getAttribute('data-broker')||'');
+    } else if (mode === 'name') {
+      return (a.getAttribute('data-symbol')||'').localeCompare(b.getAttribute('data-symbol')||'');
+    }
+    return 0;
+  });
+  cards.forEach(function(c) { container.appendChild(c); });
+}
+function lwcToggle(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  if (show && window._lwcI && window._lwcI[id]) window._lwcI[id]();
+}
+/* ── LWC chart factory — shared across all position cards ── */
+function _lwcFactory(cid, dataArr, plines, markerCfg) {
+  var el = document.getElementById(cid + '__c');
+  if (!el) return;
+  var w = el.offsetWidth || (el.parentElement && el.parentElement.offsetWidth) || 500;
+  var chart = LightweightCharts.createChart(el, {
+    width: w, height: 240,
+    layout: {background:{type:'solid',color:'#1a2334'}, textColor:'#c0ccd8', fontSize:10},
+    grid: {vertLines:{color:'#243040'}, horzLines:{color:'#243040'}},
+    timeScale: {borderColor:'#243040', timeVisible:false, secondsVisible:false},
+    rightPriceScale: {borderColor:'#243040', scaleMargins:{top:0.12, bottom:0.12}},
+    crosshair: {mode:1}, handleScroll:false, handleScale:false
+  });
+  var s = chart.addSeries(LightweightCharts.AreaSeries, {
+    lineColor:'#3498db', topColor:'rgba(52,152,219,0.25)', bottomColor:'rgba(52,152,219,0)',
+    lineWidth:1.5, priceLineVisible:false, lastValueVisible:true
+  });
+  s.setData(dataArr);
+  if (plines) { for (var i=0; i<plines.length; i++) s.createPriceLine(plines[i]); }
+  if (markerCfg) LightweightCharts.createSeriesMarkers(s, [markerCfg]);
+  var k=2/21, prev=null, ema=[];
+  for (var i=0; i<dataArr.length; i++) {
+    var v = dataArr[i].value;
+    prev = (prev===null) ? v : v*k + prev*(1-k);
+    if (i>=19) ema.push({time:dataArr[i].time, value:Math.round(prev*1e6)/1e6});
+  }
+  if (ema.length > 1) {
+    var emaS = chart.addSeries(LightweightCharts.LineSeries, {
+      color:'rgba(249,199,79,0.75)', lineWidth:1, lineStyle:2,
+      priceLineVisible:false, lastValueVisible:false, crossHairMarkerVisible:false
+    });
+    emaS.setData(ema);
+  }
+  chart.timeScale().fitContent();
+  requestAnimationFrame(function(){
+    var w2 = el.offsetWidth;
+    if (w2 && w2 !== w) chart.resize(w2, 240);
+  });
+}
+function _lwcRegister(cid, dataArr, plines, markerCfg) {
+  window._lwcI = window._lwcI || {};
+  window._lwcI[cid] = function() {
+    if (window._lwcI[cid]._done) return;
+    window._lwcI[cid]._done = true;
+    _lwcFactory(cid, dataArr, plines, markerCfg);
+  };
+}
+{% endraw %}
+</script>
+<script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js" integrity="sha384-ExNwjbclSLY2LS3S2c6aDJDjpBHGZLct23WX65fLzj0ob1bRrCh9H90WThES5wQA" crossorigin="anonymous"></script>
+</head>
+<body>
+<header>
+<h1>Sell Strategy — Position Exit Decisions</h1>
+<div class="sub">Generated {{ generated_at }} &nbsp;·&nbsp; Source: {{ positions_file }} &nbsp;·&nbsp;
+Data: yfinance + TradingView Screener</div>
+</header>
+<main>
+{{ top5 }}
+{{ port_summary }}
+{{ summary }}
+{{ hedge_banner }}
+{{ coverage }}
+{{ search_bar }}
+{{ grade_filt }}
+{{ size_filt }}
+{{ decision_filt }}
+{{ sort_bar }}
+{{ legend }}
+
+<div id="cards-container">
+{{ cards }}
+</div>
+
+</main>
+<footer style="margin-top:30px;color:#555;font-size:0.78rem;text-align:center">
+  Rules based on Mark Minervini SEPA, O'Neil CAN SLIM, and R-Multiple risk management.
+  This is NOT financial advice. Always verify with your broker before acting.
+</footer>
+<script>
+{% raw %}
+(function(){
+  var gen = new Date("{% endraw %}{{ generated_at }}{% raw %}");
+  var age = (Date.now() - gen) / 3600000;
+  if (!isNaN(age) && age > 8) {
+    var h = age < 24 ? (Math.floor(age) + ' hours') : (Math.floor(age/24) + ' days');
+    var b = document.createElement('div');
+    b.style = 'position:fixed;top:0;left:0;right:0;background:#7c5800;color:#ffd369;padding:.6rem 1rem;font-size:.9rem;font-weight:600;z-index:9999;text-align:center';
+    b.textContent = '\u26a0 Report is ' + h + ' old \u2014 re-run for current data';
+    document.body.prepend(b);
+  }
+})();
+{% endraw %}
+</script>
+</body>
+</html>

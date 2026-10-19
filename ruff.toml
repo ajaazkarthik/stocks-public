@@ -1,0 +1,58 @@
+# ruff.toml — stocks trading system linter configuration
+# Run: ruff check .
+# Auto-fix: ruff check --fix .
+# Format: ruff format .
+# Added to pre-commit via .pre-commit-config.yaml
+
+[lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes (undefined names, unused imports)
+    "B",     # flake8-bugbear (common bug patterns)
+    "C4",    # flake8-comprehensions (unnecessary list/dict/set comprehensions)
+    "PIE",   # misc lints
+    "T20",   # flake8-print (print() calls) — kept to catch accidental debug prints
+    "UP",    # pyupgrade (use modern Python syntax)
+    "PD",    # pandas-vet (pandas anti-patterns)
+    "RUF",   # ruff-specific rules
+    "SIM",   # flake8-simplify
+    "ERA",   # eradicate (commented-out code)
+]
+
+ignore = [
+    "E501",   # line too long — existing codebase has long lines; not enforced
+    "T201",   # print() found — we use print() intentionally in CLI scripts
+    "ERA001", # commented-out code — intentional in many places (# nocheck, legacy notes)
+    "SIM108", # ternary operator — sometimes explicit if/else is clearer
+    "B008",   # function call in default argument — used legitimately in argparse
+    "UP007",  # X | Y union types — keep Union[] for Python 3.9 compat
+]
+
+# Files and directories to skip entirely
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "*.egg-info",
+    "temp/",
+    "logs/",
+    ".cache/",
+    "benchmarks/patches/",
+]
+
+[lint.per-file-ignores]
+# Test files may use assert, unused imports (fixtures), and magic values
+"test_*.py" = ["B", "E711", "E712"]
+"*_test.py" = ["B", "E711", "E712"]
+"conftest.py" = ["F401"]  # imported but unused (pytest fixtures)
+
+# Legacy/debug scripts — lower standards
+"_*.py" = ["ALL"]
+
+[format]
+# ruff format (black-compatible)
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Global Portfolio Dashboard — {{ now }}</title>
+<style>
+{% raw %}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;padding:24px}
+  h1{color:#58a6ff;font-size:22px;margin-bottom:4px}
+  .subtitle{color:#8b949e;font-size:12px;margin-bottom:28px}
+  h2{color:#79c0ff;font-size:15px;margin:28px 0 10px;border-bottom:1px solid #21262d;padding-bottom:6px}
+  table{width:100%;border-collapse:collapse;margin-bottom:20px}
+  th{background:#161b22;color:#8b949e;font-weight:600;text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:0.5px}
+  td{padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:middle}
+  tr:hover td{background:#161b22}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-family:monospace}
+  .pos{color:#2ecc71}
+  .neg{color:#e74c3c}
+  .dim{color:#8b949e;font-size:12px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700}
+  .badge.ok{background:#0d3d1f;color:#2ecc71;border:1px solid #2ecc71}
+  .badge.cached{background:#0d2040;color:#79c0ff;border:1px solid #79c0ff}
+  .badge.warn{background:#3d2e00;color:#f0b84b;border:1px solid #f0b84b}
+  .badge.fail{background:#3d0d0d;color:#e74c3c;border:1px solid #e74c3c}
+  .badge.skip{background:#1c2128;color:#8b949e;border:1px solid #30363d}
+  .badge.pdf{background:#0d2540;color:#56b4d3;border:1px solid #56b4d3}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+  .card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:16px}
+  .card h3{color:#79c0ff;font-size:13px;margin-bottom:12px}
+  .metric{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d}
+  .metric:last-child{border-bottom:none}
+  .metric .label{color:#8b949e;font-size:12px}
+  .metric .val{font-weight:600;font-variant-numeric:tabular-nums}
+  input[type=text]{background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:6px 12px;border-radius:6px;margin-bottom:12px;width:100%;font-size:13px}
+  .search-wrap{margin-bottom:12px}
+  details summary{outline:none}
+  details > summary::-webkit-details-marker {display:none}
+{% endraw %}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
+</head>
+<body>
+<header>
+<h1>Global Portfolio Dashboard</h1>
+<div class="subtitle">Generated {{ now }} &nbsp;|&nbsp; {{ total_pos }} open positions across all brokers</div>
+</header>
+<main>
+{{ zerodha_warn }}
+{{ missing_warn }}
+<h2>Portfolio Quick Stats</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Profit / Loss Count</h3>
+    <div class="metric"><span class="label">&#x1F4C8; In Profit</span><span class="val pos">{{ profit_count }} stocks</span></div>
+    <div class="metric"><span class="label">&#x1F4C9; In Loss</span><span class="val neg">{{ loss_count }} stocks</span></div>
+    <div class="metric"><span class="label">&#x23F8; Flat / Breakeven</span><span class="val dim">{{ flat_count }} stocks</span></div>
+    <div class="metric"><span class="label">Overall Unrealised PnL %</span><span class="val {{ ovr_cls }}">{{ overall_pnl_pct }}</span></div>
+  </div>
+  <div class="card">
+    <h3>Broker Unrealised PnL (&#x2248;USD)</h3>
+    <table style="margin-bottom:0">
+      <tr><th>Broker</th><th class="num">Positions</th><th class="num">PnL &#x2248;USD</th><th class="num">PnL %</th></tr>
+      {{ broker_rows }}
+    </table>
+  </div>
+</div>
+
+<h2>Broker Coverage</h2>
+<table>
+  <tr><th>Broker</th><th>Status</th><th>Detail</th></tr>
+  {{ cov_rows }}
+</table>
+
+<h2>Portfolio by Currency</h2>
+<table>
+  <tr><th>Currency</th><th class="num">Market Value</th><th class="num">Unrealised PnL</th><th class="num">Positions</th></tr>
+  {{ val_rows if val_rows else '<tr><td colspan="4" class="dim">No data</td></tr>' }}
+</table>
+
+{{ realised_section_html }}
+
+{{ risk_section_html }}
+
+<h2>All Positions ({{ total_pos }})</h2>
+<div class="search-wrap">
+  <input type="text" id="filterBox" placeholder="Filter by symbol or broker…" oninput="filterTable()">
+</div>
+<table id="posTable">
+  <thead><tr>
+    <th>Symbol</th><th>Broker</th><th class="num">Shares</th>
+    <th class="num">Avg Cost</th><th class="num">Current</th>
+    <th class="num">Value</th><th class="num">PnL</th><th class="num">PnL %</th>
+  </tr></thead>
+  {{ pos_rows }}
+</table>
+
+<div class="dim" style="margin-top:20px;text-align:right">
+  Global Portfolio Dashboard &nbsp;|&nbsp; {{ now }}
+</div>
+</main>
+
+<script>
+{% raw %}
+function filterTable(){
+  var q = document.getElementById('filterBox').value.toLowerCase();
+  var rows = document.getElementById('posTable').getElementsByTagName('tr');
+  for(var i=1;i<rows.length;i++){
+    var text = rows[i].textContent.toLowerCase();
+    rows[i].style.display = text.includes(q) ? '' : 'none';
+  }
+}
+{% endraw %}
+</script>
+{{ system_footer }}
+</body>
+</html>

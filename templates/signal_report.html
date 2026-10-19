@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal Stack — {{ title }} ({{ n }})</title>
+<style>
+{% raw %}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0f1e;color:#e2e8f0;font-size:13px;line-height:1.5}
+.header{padding:24px 28px 8px;border-bottom:1px solid #1e293b}
+h1{font-size:22px;color:#f8fafc;font-weight:700}
+.sub{color:#64748b;font-size:12px;margin-top:4px}
+.legend{display:flex;gap:12px;flex-wrap:wrap;padding:12px 28px;background:#0f172a;border-bottom:1px solid #1e293b;font-size:11px;color:#64748b}
+.legend b{color:#94a3b8}
+.cards{padding:20px 24px;display:flex;flex-direction:column;gap:18px}
+
+.card{background:#0f172a;border:1px solid #1e293b;border-radius:12px;overflow:hidden;transition:border-color .2s}
+.card:hover{border-color:#334155}
+.card-top{border-color:#334155;box-shadow:0 0 20px rgba(51,65,85,.4)}
+
+.card-header{display:flex;align-items:flex-start;gap:16px;padding:16px 20px;background:#111827;border-bottom:1px solid #1e293b}
+.rank-badge{width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;flex-shrink:0;color:#fff}
+.card-title{flex:1}
+.ticker{font-size:18px;font-weight:700;color:#38bdf8}
+.company{color:#94a3b8;font-size:12px;margin-top:2px}
+.tags{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.tag-sector{background:#1e3a5f;color:#7dd3fc;border-radius:4px;padding:2px 7px;font-size:10px}
+.tag-tf{background:#1a2e1a;color:#4ade80;border-radius:4px;padding:2px 7px;font-size:10px}
+.badge-up{background:#14532d;color:#4ade80;border-radius:4px;padding:2px 7px;font-size:10px}
+.badge-dn{background:#450a0a;color:#f87171;border-radius:4px;padding:2px 7px;font-size:10px}
+.badge-pool-yes{background:#0c2a1a;color:#22c55e;border:1px solid #166534;border-radius:4px;padding:2px 7px;font-size:10px}
+.badge-pool-no{background:#1c1005;color:#78716c;border:1px solid #292524;border-radius:4px;padding:2px 7px;font-size:10px}
+.badge-sc-yes{background:#1a1a2e;color:#a78bfa;border:1px solid #4c1d95;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:600}
+.badge-fresh-new{background:#0c2a1a;color:#22c55e;border:1px solid #166534;border-radius:4px;padding:2px 7px;font-size:10px}
+.badge-fresh-ok{background:#1e3a5f;color:#7dd3fc;border:1px solid #1d4e89;border-radius:4px;padding:2px 7px;font-size:10px}
+.badge-fresh-stale{background:#2a1a12;color:#f59e0b;border:1px solid #7c2d12;border-radius:4px;padding:2px 7px;font-size:10px}
+.comp-boost{font-size:10px;color:#64748b;margin-top:1px}
+.yellow{color:#eab308!important}
+.srt-btn{background:#1e293b;border:1px solid #334155;color:#94a3b8;border-radius:20px;padding:4px 12px;cursor:pointer;font-size:12px;transition:all .2s}
+.srt-btn.active{background:#38bdf8;color:#0f172a;border-color:#38bdf8;font-weight:600}
+.srt-btn:hover:not(.active){border-color:#64748b;color:#cbd5e1}
+
+.composite-block{text-align:right}
+.comp-score{font-size:38px;font-weight:800;line-height:1}
+.comp-label{font-size:10px;color:#64748b;margin-top:2px}
+
+.layers{display:flex;gap:12px;padding:12px 20px;background:#0a0f1e;border-bottom:1px solid #1e293b}
+.layer-item{flex:1;min-width:100px}
+.layer-title{font-size:10px;color:#64748b;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+.bar-row{display:flex;align-items:center;gap:6px}
+.bar-bg{flex:1;height:8px;background:#1e293b;border-radius:4px;overflow:hidden}
+.bar-fill{height:100%;border-radius:4px;transition:width .4s}
+.bar-val{font-size:11px;color:#94a3b8;min-width:24px;font-family:monospace}
+
+.breakdown{background:#080d1a;border-bottom:1px solid #1e293b;padding:0 20px}
+.breakdown>summary{cursor:pointer;list-style:none;padding:9px 0;font-size:11px;color:#94a3b8;letter-spacing:.02em}
+.breakdown>summary::-webkit-details-marker{display:none}
+.breakdown>summary::before{content:"\25B8 ";color:#475569}
+.breakdown[open]>summary::before{content:"\25BE ";color:#475569}
+.breakdown>summary:hover{color:#cbd5e1}
+.bd-table{padding:2px 0 12px;font-size:11px}
+.bd-row{display:grid;grid-template-columns:44px 150px 1fr 76px;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid #111a2e}
+.bd-op{font-family:monospace;color:#64748b;text-align:right}
+.bd-label{color:#cbd5e1}
+.bd-detail{color:#64748b;font-family:monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd-value{font-family:monospace;color:#94a3b8;text-align:right}
+.bd-row.bd-emph{border-top:1px solid #334155}
+.bd-emph .bd-label,.bd-emph .bd-value{color:#e2e8f0;font-weight:700}
+@media(max-width:800px){.bd-row{grid-template-columns:36px 1fr 70px}.bd-detail{display:none}}
+
+.detail-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;padding:0 20px}
+@media(max-width:1100px){.detail-grid{grid-template-columns:1fr 1fr}}
+.col{padding:14px 10px;border-right:1px solid #1e293b}
+.col:last-child{border-right:none}
+.col-head{font-size:11px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #1e293b}
+.kv{display:flex;justify-content:space-between;padding:3px 0;font-size:12px}
+.kv span{color:#64748b}
+.kv b{color:#e2e8f0;font-weight:600}
+.green{color:#4ade80!important}
+.red{color:#f87171!important}
+
+.upgrades,.earnings-hist{margin-top:6px}
+.up-item{font-size:11px;color:#4ade80;padding:2px 0}
+.earn-item{font-size:11px;color:#94a3b8;padding:1px 0;font-family:monospace}
+
+.w52-outer{position:relative;height:8px;background:#1e293b;border-radius:4px;overflow:hidden;margin:8px 0 4px}
+.w52-inner{height:100%;background:linear-gradient(90deg,#ef4444,#eab308,#22c55e);opacity:.5}
+.w52-thumb{position:absolute;top:-2px;width:10px;height:12px;background:#fff;border-radius:2px}
+.w52-label{font-size:10px;color:#64748b}
+
+.news-block{padding:12px 20px;border-top:1px solid #1e293b}
+.news-item{font-size:11px;color:#94a3b8;padding:5px 8px;margin-bottom:4px;background:#0a0f1e;border-radius:4px;line-height:1.4}
+
+.bt-block{padding:12px 20px;border-top:1px solid #1e293b;background:#0a0f1e}
+.bt-header{display:flex;align-items:center;gap:10px;margin:6px 0 8px}
+.bt-badge{font-size:13px;font-weight:800;padding:4px 14px;border-radius:20px;color:#fff;text-transform:uppercase;letter-spacing:.04em}
+.bt-label{font-size:12px;color:#94a3b8}
+.bt-avoid-note{color:#f87171;font-style:italic;font-size:11px}
+.bt-pills{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px}
+.bt-pill{font-size:11px;padding:3px 10px;border-radius:12px;font-weight:600}
+.bt-pill-good{background:#14532d;color:#4ade80}
+.bt-pill-ok{background:#1e3a5f;color:#7dd3fc}
+.bt-pill-bad{background:#450a0a;color:#f87171}
+.bt-na-pill{background:#1e293b;color:#64748b}
+.bt-na{font-size:11px;color:#64748b;margin:4px 0}
+.bt-legend{font-size:10px;color:#475569;line-height:1.6;margin-top:4px}
+
+.footer{padding:16px 28px;color:#374151;font-size:11px;border-top:1px solid #1e293b}
+.search-bar{display:flex;align-items:center;gap:10px;padding:10px 24px;background:#0f172a;border-bottom:1px solid #1e293b}
+.search-bar input{flex:1;max-width:360px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:6px;padding:6px 12px;font-size:13px;outline:none}
+.search-bar input:focus{border-color:#38bdf8}
+.search-bar input::placeholder{color:#475569}
+#match-count{color:#64748b;font-size:12px}
+.card.hidden{display:none}
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 8px}
+.filter-btn{background:#1e293b;border:1px solid #334155;color:#94a3b8;border-radius:20px;padding:5px 14px;cursor:pointer;font-size:12px;transition:all 0.2s}
+.filter-btn.active{background:#38bdf8;color:#0f172a;border-color:#38bdf8;font-weight:600}
+.filter-btn:hover:not(.active){border-color:#64748b;color:#cbd5e1}
+{% endraw %}
+{{ buy_advisor_css }}
+{{ fx_panel_css }}
+{{ options_badge_css }}
+{{ short_squeeze_css }}
+{{ ai_commentary_css }}
+</style>
+<script>
+{% raw %}
+var _activeExchange = 'ALL';
+var _activeUnits    = 'ALL';
+var _activeGrade    = 'ALL';
+function filterExchange(btn, ex){
+  _activeExchange = ex;
+  document.querySelectorAll('.exchange-btn').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  filterCards();
+}
+function filterUnits(btn, u){
+  _activeUnits = u;
+  document.querySelectorAll('.units-btn').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  filterCards();
+}
+function filterCards(){  
+  var q = document.getElementById('searchInput').value.toLowerCase();
+  var cards = document.querySelectorAll('.card');
+  var visible = 0;
+  cards.forEach(function(c){  
+    var ticker = (c.querySelector('.ticker')||{}).textContent||'';
+    var company = (c.querySelector('.company')||{}).textContent||'';
+    var exchange = c.getAttribute('data-exchange')||'';
+    var units    = c.getAttribute('data-units')||'';
+    var matchText  = !q || (ticker+' '+company).toLowerCase().indexOf(q) !== -1;
+    var matchEx    = _activeExchange === 'ALL' || exchange === _activeExchange;
+    var matchUnits = _activeUnits   === 'ALL' || units    === _activeUnits;
+    var cardGrade  = c.getAttribute('data-grade')||'';
+    var matchGrade = _activeGrade === 'ALL' || cardGrade === _activeGrade;
+    var show = matchText && matchEx && matchUnits && matchGrade;
+    c.style.display = show ? '' : 'none';
+    if(show) visible++;
+  });
+  var mc = document.getElementById('match-count');
+  if(mc) mc.textContent = q ? '('+visible+' match'+(visible!==1?'es':'')+')' : '';
+}
+function clearSearch(){document.getElementById('searchInput').value='';filterCards();}
+function filterGrade(g){
+  _activeGrade = (_activeGrade === g) ? 'ALL' : g;
+  document.querySelectorAll('.grade-btn').forEach(function(b){
+    b.classList.toggle('active', b.getAttribute('data-g') === _activeGrade);
+  });
+  filterCards();
+}
+function sortCards(btn, mode){
+  document.querySelectorAll('.srt-btn').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  var container = document.querySelector('.cards');
+  var cards = Array.from(container.querySelectorAll('.card'));
+  cards.sort(function(a,b){
+    if(mode==='score') return parseFloat(b.getAttribute('data-composite')||0)-parseFloat(a.getAttribute('data-composite')||0);
+    if(mode==='sector') return (a.getAttribute('data-sector')||'').localeCompare(b.getAttribute('data-sector')||'');
+    return 0;
+  });
+  cards.forEach(function(c){container.appendChild(c);});
+}
+{% endraw %}
+</script>
+</head>
+<body>
+<header>
+  <h1>&#x1F3AF; Signal Stack — {{ title }}</h1>
+  <div class="sub">Quality model {{ model_version }} | Regime weights: {{ weight_summary }} | Decision = quality × freshness × data confidence + conviction boosts | Generated: {{ now }} | {{ n }} symbols</div>
+</header>
+<main>
+{{ coverage_warning|safe }}
+<div class="search-bar">
+  <input id="searchInput" type="text" placeholder="Search by symbol or company name..." oninput="filterCards()" autofocus />
+  <span id="match-count"></span>
+  <button onclick="clearSearch()" style="background:#1e293b;border:1px solid #334155;color:#94a3b8;border-radius:5px;padding:5px 10px;cursor:pointer;font-size:12px">&#x2715; Clear</button>
+</div>
+<div class="filter-bar">
+  <button class="filter-btn exchange-btn active" onclick="filterExchange(this,'ALL')">All</button>
+  <button class="filter-btn exchange-btn" onclick="filterExchange(this,'US')">&#x1F1FA;&#x1F1F8; US</button>
+  <button class="filter-btn exchange-btn" onclick="filterExchange(this,'NSE')">&#x1F1EE;&#x1F1F3; NSE</button>
+  <button class="filter-btn exchange-btn" onclick="filterExchange(this,'BSE')">&#x1F1EE;&#x1F1F3; BSE</button>
+  <button class="filter-btn exchange-btn" onclick="filterExchange(this,'SGX')">&#x1F1F8;&#x1F1EC; SGX</button>
+  <button class="filter-btn exchange-btn" onclick="filterExchange(this,'ASX')">&#x1F1E6;&#x1F1FA; ASX</button>
+  <button class="filter-btn exchange-btn" onclick="filterExchange(this,'HKEX')">&#x1F1ED;&#x1F1F0; HKEX</button>
+</div>
+<div class="filter-bar" style="margin-top:6px">
+  <button class="filter-btn units-btn active" onclick="filterUnits(this,'ALL')">All Sizes</button>
+  <button class="filter-btn units-btn" onclick="filterUnits(this,'AVOID')">&#x26A0; AVOID</button>
+  <button class="filter-btn units-btn" onclick="filterUnits(this,'1U')">1 unit</button>
+  <button class="filter-btn units-btn" onclick="filterUnits(this,'2U')">2 units</button>
+  <button class="filter-btn units-btn" onclick="filterUnits(this,'3U')">3 units</button>
+  <button class="filter-btn units-btn" onclick="filterUnits(this,'NA')">No Backtest</button>
+</div>
+<div class="filter-bar" style="margin-top:6px">
+  <span style="color:#475569;font-size:11px;align-self:center">Grade:</span>
+  <button class="filter-btn grade-btn active" data-g="ALL" onclick="filterGrade('ALL')">All Grades</button>
+  <button class="filter-btn grade-btn" data-g="A" onclick="filterGrade('A')" style="color:#22c55e;border-color:#22c55e33">A &#x2265;75 &#x1F7E2;</button>
+  <button class="filter-btn grade-btn" data-g="B" onclick="filterGrade('B')" style="color:#eab308;border-color:#eab30833">B &#x2265;60 &#x1F7E1;</button>
+  <button class="filter-btn grade-btn" data-g="C" onclick="filterGrade('C')" style="color:#f97316;border-color:#f9731633">C &#x2265;45 &#x1F7E0;</button>
+  <button class="filter-btn grade-btn" data-g="D" onclick="filterGrade('D')" style="color:#ef4444;border-color:#ef444433">D &lt;45 &#x1F534;</button>
+</div>
+<div class="filter-bar" style="margin-top:6px">
+  <span style="color:#475569;font-size:11px;align-self:center">Sort:</span>
+  <button class="srt-btn active" onclick="sortCards(this,'score')">Score &#x2193;</button>
+  <button class="srt-btn" onclick="sortCards(this,'sector')">Sector</button>
+</div>
+{{ account_cash_html|safe }}
+{{ forex_html|safe }}
+{{ signal_summary_panel|safe }}
+<div class="legend">
+  <b>Score guide:</b>
+  <span>A &#x2265;75 &#x1F7E2;</span><span>B &#x2265;60 &#x1F7E1;</span><span>C &#x2265;45 &#x1F7E0;</span><span>D &#x2265;30 &#x1F534;</span>
+  <b>Weights:</b>
+  <span>{{ weight_summary }}</span>
+  <span>L5 Moomoo institutional flow &#xD7;0.10 when available</span>
+  <span>India holdings, L6/L7, book, pool and Smallcase are context only</span>
+  <b>Freshness:</b> <span>48 weekday-hour half-life; weekends excluded; no floor</span>
+</div>
+<div class="cards">
+{{ cards|safe }}
+</div>
+</main>
+<footer class="footer">
+  &#x26A0;&#xFE0F; Research only — not financial advice. Data: yfinance (Yahoo Finance) + Google News RSS + VADER sentiment. 
+  Past performance &#x2260; future results. Always DYOR.
+</footer>
+</body>
+</html>
