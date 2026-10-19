@@ -2143,7 +2143,8 @@ def score_sentiment(sent: dict) -> dict:
         "coverage": round(
             w_analyst * float(has_analyst) +
             w_beats * float(quarters > 0 and _score_number(eb.get("beat_rate"), low=0, high=1) is not None) +
-            w_news * float(news_data.get("count", 0) > 0 and _score_number(news_data.get("score"), low=-1, high=1) is not None),
+            w_news * float((_score_number(news_data.get("count"), low=0) or 0) > 0
+                           and _score_number(news_data.get("score"), low=-1, high=1) is not None),
             3,
         ),
         "analyst":         s_analyst,
@@ -2386,8 +2387,18 @@ def fetch_market_internals(ticker_obj, fund: dict, tv_symbol: str = "",
 
 def score_market_internals(internals: dict, yc: dict = None,
                            vix_level: float = None) -> dict:
+    internals = internals or {}
+    # Sanitize vendor numbers before any thresholds, weights or availability flags.
+    # Preserve L4's existing conservative coverage shrinkage until calibrated.
+    pcr = _score_number(internals.get("pcr"), low=0)
+    insider_raw = _score_number(internals.get("insider_score_raw"), low=0, high=10)
+    pos = _score_number(internals.get("w52_position"), low=0, high=1)
+    spread = _score_number((yc or {}).get("spread_bps"))
+    vix_level = _score_number(vix_level, low=0)
+    vix3m_vix = _score_number(internals.get("vix3m_vix_ratio"), low=0)
+    raw_sector_score = _score_number(internals.get("sector_etf_score"), low=0, high=10)
+    short_raw = _score_number(internals.get("short_score_raw"), low=0, high=10)
     # ── 4a PCR: <0.5=10, 0.5-0.8=8, 0.8-1.2=5, 1.2-1.5=3, >1.5=1 ──
-    pcr = internals.get("pcr")
     if pcr is None:
         s_pcr = 5.0
     elif pcr < 0.5:  s_pcr = 10.0
@@ -2397,10 +2408,9 @@ def score_market_internals(internals: dict, yc: dict = None,
     else:             s_pcr = 1.0
 
     # ── 4b Insider score 0–10 from buy_ratio ──
-    s_insider = internals.get("insider_score_raw", 5.0)
+    s_insider = insider_raw if insider_raw is not None else 5.0
 
     # ── 4c 52W position: momentum stocks near highs continue, buy-the-dip at 30-50% ──
-    pos = internals.get("w52_position")
     if pos is None:
         s_w52 = 5.0
     elif 0.50 <= pos <= 0.85:  s_w52 = 10.0  # momentum sweet spot
@@ -2411,7 +2421,6 @@ def score_market_internals(internals: dict, yc: dict = None,
     else:                       s_w52 = 2.0   # near 52W low — falling knife risk
 
     # ── 4d Yield curve (macro regime) — structural signal ──
-    spread = (yc or {}).get("spread_bps")
     if spread is None:
         s_yc = 5.0   # neutral when data unavailable
     elif spread < -25:
@@ -2444,7 +2453,6 @@ def score_market_internals(internals: dict, yc: dict = None,
     # VIX3M/VIX > 1.0 = contango = normal, calm markets
     # VIX3M/VIX < 1.0 = backwardation = fear, short-term risk exceeds long-term
     # This is a leading indicator — backwardation often precedes sell-offs
-    vix3m_vix = internals.get("vix3m_vix_ratio")
     if vix3m_vix is not None:
         if   vix3m_vix > 1.15:   s_vix_ts = 9.0   # strong contango — very bullish backdrop
         elif vix3m_vix > 1.05:   s_vix_ts = 8.0   # normal contango — favorable
@@ -2456,27 +2464,26 @@ def score_market_internals(internals: dict, yc: dict = None,
 
     # ── 4f Sector ETF momentum (US sectors via SPDR ETFs vs SMA-200) ──────────
     # Non-US symbols (NSE, ASX) have no matching sector ETF → neutral 5.0.
-    raw_sector_score = internals.get("sector_etf_score")
     s_sector_etf = raw_sector_score if raw_sector_score is not None else 5.0
 
     # ── 4g Short Interest (US only, Boehmer 2010) ─────────────────────────────
     # Low short interest = extraordinary positive abnormal returns.
     # Non-US stocks default to neutral (5.0) since data is unavailable.
-    s_short = internals.get("short_score_raw", 5.0)
+    s_short = short_raw if short_raw is not None else 5.0
 
     # Weights: PCR 24%, Insider 18%, 52W 18%, Macro(VIX+YC) 18%, SectorETF 10%, ShortInt 12%
     # With VIX term structure: PCR 22%, Insider 16%, 52W 16%, Macro 16%, SectorETF 9%, ShortInt 11%, VIX_TS 10%
     # If VIX_TS unavailable, fall back to original weights
-    pcr_available = internals.get("pcr_available", pcr is not None)
-    insider_available = internals.get(
+    pcr_available = bool(internals.get("pcr_available", pcr is not None)) and pcr is not None
+    insider_available = bool(internals.get(
         "insider_available", "insider_score_raw" in internals
-    )
+    )) and insider_raw is not None
     w52_available = pos is not None
     macro_available = vix_level is not None or spread is not None
     sector_available = raw_sector_score is not None
-    short_available = internals.get(
+    short_available = bool(internals.get(
         "short_available", internals.get("short_ratio") is not None
-    )
+    )) and short_raw is not None
 
     if s_vix_ts is not None:
         raw_total = round(
