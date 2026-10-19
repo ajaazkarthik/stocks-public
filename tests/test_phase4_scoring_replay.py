@@ -280,5 +280,49 @@ class TestActualProductionReplay(unittest.TestCase):
             self.assertEqual(summary["cost_bps"], 15)
 
 
+
+class TestPhase4StrictHoldout(unittest.TestCase):
+    def test_training_label_available_only_after_cutoff_is_excluded(self):
+        s = event(7, day=10)
+        o = outcome(s)
+        # Exit occurs before the cutoff, but data was ingested afterwards.
+        o["available_at"] = stamp(20)
+        report, rows = replay.replay(
+            [s], fake_engine(), fake_engine(True),
+            mode="historical", asof=replay.utc(stamp(26)),
+            cutoff=replay.utc(stamp(18)), horizons=[5], outcomes=[o])
+        self.assertEqual(rows, [])
+        self.assertEqual(report["exclusions"]["training_label_after_cutoff"], 1)
+
+    def test_boosts_and_regime_require_recorded_provenance(self):
+        for field, value in (
+            ("book_bonus", 1.0), ("basket_boost", 2.0),
+            ("pool_boost", 1.0),
+            ("regime_weights", {"l1": 0.3, "l2": 0.3, "l3": 0.2, "l4": 0.2}),
+        ):
+            with self.subTest(field=field):
+                s = event()
+                s[field] = value
+                with self.assertRaisesRegex(ValueError, "point-in-time"):
+                    replay.validate_signal(s)
+                s["source_asof"][field] = stamp(10)
+                replay.validate_signal(s)
+
+    def test_features_cannot_be_newer_than_capture_even_if_prior_to_decision(self):
+        s = event()
+        s["source_asof"]["meta"] = stamp(10, 12).replace("12:00", "12:30")
+        with self.assertRaisesRegex(ValueError, "snapshot capture"):
+            replay.validate_signal(s)
+
+    def test_pinned_baseline_git_blob_fingerprint(self):
+        original = subprocess.check_output([
+            "git", "show", replay.BASE_COMMIT+":tradingview/signal_stack.py"],
+            cwd=ROOT, stderr=subprocess.PIPE)
+        self.assertEqual(replay.git_blob_sha(original),
+                         "d02df819c67385cd22a406649855dad73d68eac4")
+        self.assertNotEqual(replay.git_blob_sha(original+b"\n# changed"),
+                            replay.git_blob_sha(original))
+
+
 if __name__ == "__main__":
     unittest.main()
