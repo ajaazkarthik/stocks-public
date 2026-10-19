@@ -335,5 +335,37 @@ class TestAstraSecondReviewFindings(unittest.TestCase):
         self.assertEqual(negative["l3"], missing["l3"])
 
 
+    def test_l4_rejected_data_never_counts_as_coverage(self):
+        baseline = ss._data_confidence({}, {}, {}, {})
+        rejected = [
+            ("pcr", -0.1), ("w52_position", -0.05),
+            ("w52_position", 1.01), ("insider_buy_ratio", 1.01),
+            ("insider_buy_ratio", -0.1), ("short_ratio", -1),
+            ("sector_etf_score", 11.0), ("sector_etf_score", -1),
+            ("vix_level", -1), ("vix3m_vix_ratio", -0.5),
+            ("pcr", float("nan")), ("yc_spread", float("inf")),
+        ]
+        for key, invalid in rejected:
+            with self.subTest(key=key, invalid=str(invalid)):
+                observed = ss._data_confidence(
+                    {}, {}, {}, {key: invalid})
+                self.assertEqual(observed["l4"], baseline["l4"])
+                self.assertEqual(observed["overall"], baseline["overall"])
+
+    def test_l4_valid_boundary_data_counts_as_coverage(self):
+        baseline = ss._data_confidence({}, {}, {}, {})
+        for key, valid in (
+            ("pcr", 0), ("w52_position", 0), ("w52_position", 1),
+            ("insider_buy_ratio", 0), ("insider_buy_ratio", 1),
+            ("short_ratio", 0), ("sector_etf_score", 0),
+            ("sector_etf_score", 10), ("vix_level", 0),
+            ("vix3m_vix_ratio", 0), ("yc_spread", -250),
+        ):
+            with self.subTest(key=key, valid=valid):
+                observed = ss._data_confidence({}, {}, {}, {key: valid})
+                self.assertGreater(observed["l4"], baseline["l4"])
+
+
+
 if __name__ == "__main__":
     unittest.main()
