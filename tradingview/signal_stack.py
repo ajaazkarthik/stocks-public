@@ -2613,7 +2613,7 @@ def _composite_components(l1, l2, l3, l4, l5=None, l6=None, l7=None,
 
 WATCH_MIN_COMPOSITE = 50.0
 WATCH_MAX_COMPOSITE = 60.0
-SCORE_MODEL_VERSION = "signal-stack-2026.08.19.1"
+SCORE_MODEL_VERSION = "signal-stack-2026.10.19.phase12"
 
 # Providers report funds/ETFs with null equity fundamentals, so L2 scores them on
 # a neutral fallback that reads as an average business instead of missing data.
