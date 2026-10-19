@@ -233,5 +233,107 @@ class TestConfidenceAndBlend(unittest.TestCase):
         self.assertEqual(decision, 42.5)
 
 
+class TestAstraSecondReviewFindings(unittest.TestCase):
+    """Regression for two defects independently identified in PR #1 review."""
+
+    def test_negative_bollinger_width_is_missing_not_bullish(self):
+        missing = ss.score_technical({})
+        for invalid in (-0.01, -3.0, -100, float("nan"), float("-inf")):
+            with self.subTest(invalid=invalid):
+                result = ss.score_technical({}, {"bb_width": invalid})
+                self.assertIsNone(result["bb_width"])
+                self.assertEqual(result["total"], missing["total"])
+                self.assertEqual(result["coverage"], missing["coverage"])
+
+    def test_zero_bollinger_width_is_valid_and_observed(self):
+        result = ss.score_technical({}, {"bb_width": 0})
+        self.assertEqual(result["bb_width"], 9.0)
+        self.assertGreater(result["coverage"], 0)
+        self.assertGreater(result["total"], ss.score_technical({})["total"])
+
+    def test_negative_relative_volume_is_not_observed(self):
+        missing = ss.score_technical({})
+        negative = ss.score_technical({}, {"rel_vol": -1})
+        self.assertEqual(negative["total"], missing["total"])
+        self.assertEqual(negative["coverage"], missing["coverage"])
+        self.assertIsNone(negative["rel_vol"])
+
+    def test_upstream_band_width_requires_ordered_bounds(self):
+        """A malformed upstream BB.upper below BB.lower cannot reach the score."""
+        tree_node = next(node for node in TREE.body
+                         if isinstance(node, ast.FunctionDef)
+                         and node.name == "fetch_tv_screener")
+        source = ast.get_source_segment(TEXT, tree_node)
+        self.assertIn("bb_upper >= bb_lower", source)
+
+    def test_invalid_earnings_rate_cannot_increase_confidence(self):
+        missing = {"earnings_beats": {"quarters": 4}}
+        baseline = ss._data_confidence({}, {}, missing, {})
+        for invalid in (-0.01, 1.01, float("nan"), float("inf"), "invalid"):
+            with self.subTest(value=str(invalid)):
+                rejected = {"earnings_beats": {"beat_rate": invalid, "quarters": 4}}
+                self.assertEqual(
+                    ss.score_sentiment(rejected)["total"],
+                    ss.score_sentiment(missing)["total"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["l3"],
+                    baseline["l3"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["overall"],
+                    baseline["overall"])
+
+    def test_invalid_news_sentiment_cannot_increase_confidence(self):
+        missing = {"news": {"count": 8}}
+        baseline = ss._data_confidence({}, {}, missing, {})
+        for invalid in (-1.01, 1.01, float("nan"), float("-inf"), "garbage"):
+            with self.subTest(value=str(invalid)):
+                rejected = {"news": {"count": 8, "score": invalid}}
+                self.assertEqual(ss.score_sentiment(rejected)["total"],
+                                 ss.score_sentiment(missing)["total"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["l3"],
+                    baseline["l3"])
+                self.assertEqual(
+                    ss._data_confidence({}, {}, rejected, {})["overall"],
+                    baseline["overall"])
+
+    def test_valid_boundary_values_count_as_evidence(self):
+        for rate in (0.0, 1.0):
+            for compound in (-1.0, 1.0):
+                with self.subTest(rate=rate, compound=compound):
+                    sent = {
+                        "earnings_beats": {"beat_rate": rate, "quarters": 4},
+                        "news": {"score": compound, "count": 2},
+                        "earnings_days_away": 0,
+                    }
+                    result = ss._data_confidence({}, {}, sent, {})
+                    self.assertAlmostEqual(result["l3"], 0.75)
+
+    def test_rejected_evidence_never_increases_decision_score(self):
+        missing = {"earnings_beats": {"quarters": 4},
+                   "news": {"count": 8}}
+        rejected = {"earnings_beats": {"beat_rate": 3, "quarters": 4},
+                    "news": {"score": 2, "count": 8}}
+        missing_conf = ss._data_confidence({}, {}, missing, {})["overall"]
+        invalid_conf = ss._data_confidence({}, {}, rejected, {})["overall"]
+        self.assertEqual(missing_conf, invalid_conf)
+        layers_missing = ss.score_sentiment(missing)["total"]
+        layers_invalid = ss.score_sentiment(rejected)["total"]
+        self.assertEqual(layers_missing, layers_invalid)
+        _, decision_missing = ss._compute_decision_scores(
+            9.0, 9.0, layers_missing, 9.0, institutional_l5=None,
+            data_confidence=missing_conf)
+        _, decision_invalid = ss._compute_decision_scores(
+            9.0, 9.0, layers_invalid, 9.0, institutional_l5=None,
+            data_confidence=invalid_conf)
+        self.assertEqual(decision_missing, decision_invalid)
+
+    def test_negative_earnings_days_not_counted_as_upcoming_risk(self):
+        negative = ss._data_confidence(
+            {}, {}, {"earnings_days_away": -3}, {})
+        missing = ss._data_confidence({}, {}, {}, {})
+        self.assertEqual(negative["l3"], missing["l3"])
+
+
 if __name__ == "__main__":
     unittest.main()
