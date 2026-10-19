@@ -2861,11 +2861,17 @@ def _data_confidence(meta: dict, fund: dict, sent: dict, internals: dict,
         news_score if news_count is not None and news_count > 0 else None,
         earnings_days,
     ])
+    # L4 must not award confidence for values the internals scorer rejects.
+    # The scoring and coverage ranges use the same finite-input policy.
     l4 = coverage([
-        internals.get("pcr"), internals.get("insider_buy_ratio"),
-        internals.get("w52_position"), internals.get("short_ratio"),
-        internals.get("sector_etf_score"), internals.get("vix_level"),
-        internals.get("yc_spread"), internals.get("vix3m_vix_ratio"),
+        _score_number(internals.get("pcr"), low=0),
+        _score_number(internals.get("insider_buy_ratio"), low=0, high=1),
+        _score_number(internals.get("w52_position"), low=0, high=1),
+        _score_number(internals.get("short_ratio"), low=0),
+        _score_number(internals.get("sector_etf_score"), low=0, high=10),
+        _score_number(internals.get("vix_level"), low=0),
+        _score_number(internals.get("yc_spread")),
+        _score_number(internals.get("vix3m_vix_ratio"), low=0),
     ])
     overall = round(l1 * 0.35 + l2 * 0.25 + l3 * 0.20 + l4 * 0.20, 3)
     return {"overall": overall, "l1": l1, "l2": l2, "l3": l3, "l4": l4}
