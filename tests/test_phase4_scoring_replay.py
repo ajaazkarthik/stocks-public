@@ -196,8 +196,8 @@ class TestPhase4Evaluation(unittest.TestCase):
             score = 40 + n
             rows.append({
                 "event_id": str(n), "symbol": f"TEST{n%20}",
-                "old": {"decision": score},
-                "new": {"decision": 80-score+40},
+                "old": {"decision": score, "confidence": 0.75},
+                "new": {"decision": 80-score+40, "confidence": 0.90},
                 "excess": (n - 20) / 10, "return_pct": (n-20)/10,
             })
         result = replay.group_result(rows)
