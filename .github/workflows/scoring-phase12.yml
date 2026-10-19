@@ -1,0 +1,22 @@
+name: Scoring correctness (Phase 1–2)
+on:
+  push:
+    branches:
+      - review/phase1-phase2-scoring-correctness
+  pull_request:
+    paths:
+      - tradingview/signal_stack.py
+      - tests/test_signal_scoring_phase12.py
+      - .github/workflows/scoring-phase12.yml
+permissions:
+  contents: read
+jobs:
+  independent-scoring-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run isolated math regressions (no dependencies or credentials)
+        run: python3 -m unittest discover -s tests -p 'test_signal_scoring_phase12.py' -v
+      - name: Compile scoring source and tests
+        run: python3 -m py_compile tradingview/signal_stack.py tests/test_signal_scoring_phase12.py
