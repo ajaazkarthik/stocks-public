@@ -21,3 +21,14 @@ Start with [Architecture / economics review brief and fix evidence](./OPTIONS_EN
 - F-01 and F-02 fixes committed in the public review branch. The 12-candidate parameter is now a **batch size**; expired/out-of-horizon reference marks are rejected.
 - The public checkout is testable with the included offline tests. No broker data, credentials, historical licensed vendor files or actual fills are exported.
 - **No observed options profitability or independently calibrated future IV surface is claimed.** This remains research and has not been merged into the running scanner.
+
+
+## 2026-10-26: Three architecture research milestones integrated and tested
+
+The isolated research implementation is now available in `tradingview/options/architecture_forecast_validation.py`, `architecture_paired_evaluation.py`, `architecture_paired_store.py`, `architecture_allocation.py` and `architecture_research_integration.py`, with corresponding tests. **Public review checkout: 128 focused tests PASS. Private scanner regression: 574 tests PASS.** One pre-existing pytest `asyncio_mode` configuration warning in each run.
+
+- **A — Forecast:** Immutable, as-of timestamped projection snapshots and later exact-contract REFERENCE observations, comparing unchanged spot/IV, 5-day momentum/unchanged IV and the eight-path assumed-IV challenger. Empirical model errors and coverage remain reference-only, not proof of calibration.
+- **C — Matched evaluation:** Frozen-versus-challenger ranking-only and full-policy cohorts with decision/entry/exit/abstention states and an append-only journal. Missed source evidence remains unresolved. Crossed bid/ask prices never become claimed brokerage fills or realized profit.
+- **B — Joint portfolio allocation:** Whole-contract quantities with cash abstention, $250 per-position / $1,000 reserved-risk caps, collateral and shared stress scenarios. More than twelve candidates use a transparent NOT-PROVEN-OPTIMAL heuristic. No executable orders.
+
+Astra's scope is **economic architecture, model forecasting and joint risk/evaluation assumptions**, NOT routine line-by-line code review. The implementation is complete as an isolated, manually invoked research package; it does **not** automatically collect live observations, prove profitable options, or modify the running scanner, broker, Telegram or production DBs. No paid market data purchased. See [implementation methodology](./OPTIONS_ARCHITECTURE_IMPLEMENTATION_2026-10-26.md).
