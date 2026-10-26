@@ -23,7 +23,7 @@ def setup():
     quote={'symbol':'AMEX:SPY','expiry':'2026-12-04','strike':760.,
            'option_type':'CALL','provider':'Mock','iv':.22}
     observation=dict(symbol='AMEX:SPY',observed_at=NOW,features={'close':760.},quotes=[quote])
-    forecast={'scenarios':[{'probability':.5,'path':[{'at':TARGET,'spot':765.,'ivs':{KEY:.20}}]},
+    forecast={'start_spot':760.,'scenarios':[{'probability':.5,'path':[{'at':TARGET,'spot':765.,'ivs':{KEY:.20}}]},
                            {'probability':.5,'path':[{'at':TARGET,'spot':790.,'ivs':{KEY:.25}}]}]}
     comparison=dict(baseline=dict(candidate=None,status='NO_TREND'),selection=None,
                     ranked=[],paper_orders=0,notifier_eligible=False,performance='NOT_MEASURED')
@@ -35,8 +35,8 @@ def test_research_integrates_three_layers_without_execution():
     data=assemble(**setup())
     assert data['forecast_vintage']['predictions'][KEY]['unchanged']['iv']==.22
     assert data['portfolio_allocation']['positions']==[]
-    assert data['ranking_only']['baseline']['state']=='CASH'
-    assert data['full_policy']['challenger']['state']=='CASH'
+    assert data['ranking_only']['baseline']==[]
+    assert data['full_policy']['challenger']==[]
     assert data['broker_orders']==data['telegram_messages']==0
     assert data['actual_profit']=='NOT_MEASURED'
 

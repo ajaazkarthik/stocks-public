@@ -19,7 +19,11 @@ def finite(value, *, minimum=None):
 
 def allocate(opportunities, *, available_cash, risk_budget=1000., per_position_risk=250.,
              existing_reserved_risk=0., shared_stress_budget=None, max_positions=5,
-             max_search_states=200_000):
+             max_search_states=200_000, existing_stress_losses=None):
+    if existing_stress_losses is None and existing_reserved_risk>0:
+        return {'status':'EXISTING_POSITION_STRESS_NOT_EVALUATED',
+                'positions':[],'broker_orders':0,'modelled_net_usd':0.,
+                'realized_net':'NOT_MEASURED'}
     if shared_stress_budget is None:
         return {"status": "UNASSESSED_SHARED_STRESS", "positions": [], "broker_orders": 0,
                 "modelled_net_usd": 0., "realized_net": "NOT_MEASURED"}
@@ -33,6 +37,10 @@ def allocate(opportunities, *, available_cash, risk_budget=1000., per_position_r
     if len({c["id"] for c in candidates}) != len(candidates):
         raise ValueError("DUPLICATE_CANDIDATE")
     stress_ids = None
+    if existing_stress_losses is not None:
+        if not isinstance(existing_stress_losses,dict) or not existing_stress_losses:
+            raise ValueError('EXISTING_POSITION_STRESS_MISSING')
+        for v in existing_stress_losses.values():finite(v,minimum=0)
     for c in candidates:
         for field in ("conservative_net_usd", "risk_usd", "collateral_usd"):
             finite(c[field])
@@ -47,12 +55,16 @@ def allocate(opportunities, *, available_cash, risk_budget=1000., per_position_r
         stress_ids = ids
         if any(finite(val, minimum=0) < 0 for val in scenario_map.values()):
             raise ValueError("INVALID_STRESS")
+    if existing_stress_losses is not None and candidates and tuple(sorted(existing_stress_losses))!=stress_ids:
+        raise ValueError('INCUMBENT_STRESS_SCENARIO_MISMATCH')
+    if existing_stress_losses is not None and any(v>shock for v in existing_stress_losses.values()):
+        raise ValueError('INCUMBENT_STRESS_BUDGET_BREACHED')
     if reserved > total:
         raise ValueError("EXISTING_POSITION_BREACH")
     if len(candidates) > 12:
         # All opportunities considered. A transparent heuristic is preferable
         # to silently discarding every result as the original 12-cap did.
-        picks=[];used_risk=used_collateral=0.;used_stress={k:0. for k in stress_ids};net=0.
+        picks=[];used_risk=used_collateral=0.;used_stress={k:float((existing_stress_losses or {}).get(k,0)) for k in stress_ids};net=0.
         ordered=sorted(candidates,key=lambda c:(-c["conservative_net_usd"],c["id"]))
         for c in ordered:
             for q in range(1,min(c["max_qty"],int(cap//c["risk_usd"]))+1):
@@ -102,7 +114,7 @@ def allocate(opportunities, *, available_cash, risk_budget=1000., per_position_r
                 continue
             dfs(i + 1, picks + (q,), positions + int(q > 0), new_risk, new_collateral,
                 new_shocks, net + q * c["conservative_net_usd"])
-    dfs(0, (), 0, 0., 0., (0.,) * len(stress_ids or ()), 0.)
+    dfs(0, (), 0, 0., 0., tuple(float((existing_stress_losses or {}).get(k,0)) for k in (stress_ids or ())), 0.)
     return {"status": "MODEL_ONLY_OPTIMUM", "positions": [dict(id=i, qty=q) for i, q in best[1]],
             "modelled_net_usd": round(best[0], 6), "reserved_risk_usd": round(best[2], 6),
             "collateral_used_usd": round(best[3], 6), "worst_joint_stress_usd": round(best[4], 6),

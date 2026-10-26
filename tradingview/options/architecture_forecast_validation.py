@@ -13,7 +13,7 @@ import json
 import math
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 SCHEMA = "options_forecast_vintage_v1"
@@ -108,6 +108,8 @@ def make_vintage(*, symbol, observed_at, created_at, target_at,
         "schema": SCHEMA, "symbol": symbol,
         "decision_at": decision.isoformat(), "created_at": created.isoformat(),
         "target_at": target.isoformat(), "source_completed_bar": bars[-1][0].isoformat(),
+        "common_initial_underlying_spot": current_spot,
+        "common_initial_option_ivs": {k: options[k]["unchanged"]["iv"] for k in sorted(options)},
         "predictions": options, "provenance": "REFERENCE_MODEL_UNVERIFIED",
         "option_iv_calibrated": False, "broker_fills": 0, "notifier_eligible": False,
     }
@@ -217,3 +219,57 @@ def compare(path):
             "independent_target_dates": len(dates),
             "models": metrics, "nominal_80_percent_calibration_proven": False,
             "actual_trading_profit": "NOT_MEASURED"}
+
+
+def coverage(path, *, as_of, max_lag_days=3):
+    """Complete matured forecast denominator, including never-observed outcomes.
+
+    Reference quotes 1-3 days late must NOT be pooled with exact-horizon
+    accuracy. Repeated strikes on one day do not become independent dates.
+    """
+    cutoff=aware(as_of)
+    if type(max_lag_days) is not int or max_lag_days<0:raise ValueError('INVALID_LAG')
+    p=_private(path)
+    with sqlite3.connect(p) as db:
+        db.executescript(DDL)
+        vv=db.execute('SELECT body FROM forecast_vintage').fetchall()
+        oo=db.execute('SELECT id,observed_at,body FROM forecast_outcome ORDER BY observed_at').fetchall()
+    by_id={}
+    for ident,at,body in oo:
+        at=aware(at)
+        if at<=cutoff:by_id.setdefault(ident,[]).append((at,json.loads(body)))
+    counts=dict(NOT_YET_MATURE=0,PENDING_WITHIN_ALLOWED_LAG=0,MATURED_MISSING=0,MATURED_INVALID=0,
+                MATCHED_EXACT_TARGET=0,MATCHED_DELAYED=0,TOO_LATE=0)
+    delays=[];distinct_days=set();per_date={}
+    for (body,) in vv:
+        v=json.loads(body);target=aware(v['target_at'])
+        if target>cutoff:
+            counts['NOT_YET_MATURE']+=len(v['predictions']);continue
+        day=target.date().isoformat();distinct_days.add(day)
+        count=per_date.setdefault(day,dict(count=0,matched=0,missing=0))
+        for key in v['predictions']:
+            count['count']+=1
+            events=[(at,r['contracts'].get(key,{'status':'MISSING_EXACT_CONTRACT'}))
+                    for at,r in by_id.get(v['id'],[]) if at>=target]
+            valid=[(at,r) for at,r in events if r.get('status')=='LATER_REFERENCE_ONLY']
+            if valid:
+                at,r=min(valid,key=lambda z:z[0]);lag=(at-target).total_seconds()
+                if lag<=max_lag_days*86400:
+                    label='MATCHED_EXACT_TARGET' if lag==0 else 'MATCHED_DELAYED'
+                    counts[label]+=1;count['matched']+=1;delays.append(round(lag/3600,3))
+                else:counts['TOO_LATE']+=1;count['missing']+=1
+            elif cutoff<target+timedelta(days=max_lag_days):
+                counts['PENDING_WITHIN_ALLOWED_LAG']+=1
+            elif any(r.get('status')=='INVALID_LATER_REFERENCE' for at,r in events):
+                counts['MATURED_INVALID']+=1;count['missing']+=1
+            else:
+                counts['MATURED_MISSING']+=1;count['missing']+=1
+    matched=counts['MATCHED_EXACT_TARGET']+counts['MATCHED_DELAYED']
+    total=sum(v for k,v in counts.items() if k not in ('NOT_YET_MATURE','PENDING_WITHIN_ALLOWED_LAG'))
+    return {'as_of':cutoff.isoformat(),'matured_contract_predictions':total,
+            'matched':matched,'missing_or_invalid_or_late':total-matched,
+            'missing_fraction':round((total-matched)/total,6) if total else None,
+            'statuses':counts,'independent_matured_target_dates':len(distinct_days),
+            'by_target_date':per_date,'match_delays_hours':delays,
+            'observed_spot_iv_error_does_not_prove_spread_pnl':True,
+            'broker_profit':'NOT_MEASURED'}
