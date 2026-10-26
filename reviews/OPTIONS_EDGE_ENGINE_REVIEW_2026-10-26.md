@@ -6,11 +6,11 @@
 
 - [`tradingview/options/edge_engine.py`](../tradingview/options/edge_engine.py) — mirrors the frozen SPY/QQQ/IWM 30–60 DTE spread candidate set, values entire spreads over provided joint price/IV paths, applies the existing stops/targets and costs, and solves a model-only maximum debit/minimum credit at $0.01 per-share increments.
 - [`tradingview/options/edge_research_ledger.py`](../tradingview/options/edge_research_ledger.py) — read-only paper-ledger auditor; optional *separate* local diagnostics DB storing only source hashes and summary statuses.
-- [`tradingview/options/paper_scanner.py`](../tradingview/options/paper_scanner.py) — **public review-only frozen eligibility reference**, extracted from the private `us-vertical-paper-v1` control through `choose_candidate`. It does **not** include trading, paper lifecycle, scheduler, reporting, data collection, or Telegram functions.
+- [`tradingview/options/paper_scanner.py`](../tradingview/options/paper_scanner.py) — **complete frozen paper-only scanner reference**, including its offline state/lifecycle code; it has no broker order or Telegram delivery calls.
 - [`tests/test_option_paper_scanner.py`](../tests/test_option_paper_scanner.py) — synthetic observation/contract fixture definitions only; not real market data.
 - [`tests/test_options_edge_engine.py`](../tests/test_options_edge_engine.py) and [`tests/test_options_edge_ledger.py`](../tests/test_options_edge_ledger.py) — 44 deterministic synthetic/invariance/permission tests.
 
-The core edge and ledger code are reproduced from private research commit `61e789ecddbb66f6bad2a0cd148c7b74d8b58982`. The policy reference and fixture module are intentionally truncated to remove irrelevant runtime behaviour. This repository has an existing `tradingview.scheduler.market_calendar` module that the frozen quote validation references. The private repository, trading system, and production databases remain separate and unchanged.
+The core edge and ledger code are reproduced from private research commit `61e789ecddbb66f6bad2a0cd148c7b74d8b58982`. The previously incomplete policy stub has been replaced with the full offline frozen paper scanner. The code and review tests in this public branch can now be inspected and executed locally. This repository has an existing `tradingview.scheduler.market_calendar` module that the frozen quote validation references. The private repository, trading system, and production databases remain separate and unchanged.
 
 ## Reviewing and testing
 
@@ -20,7 +20,7 @@ Use a local Python 3.12+ environment with `pytest` and `pandas-market-calendars`
 python -m pytest -q tests/test_options_edge_engine.py tests/test_options_edge_ledger.py
 ```
 
-The private research branch passed these 44 targeted tests and a 490-test wider regression, **but those results are not proof of profit and the sanitized public package must be reviewed/tested independently**.
+The PUBLIC checkout has been verified independently: **86 relevant tests passed and two known review defects are reproduced as XFAIL**. The original private branch had a broader passing suite, but neither test result establishes trading profitability.
 
 ### Requested review topics
 
