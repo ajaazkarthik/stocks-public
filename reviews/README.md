@@ -15,3 +15,8 @@ python -m pytest -q tests/test_options_pre_astra_independent_review.py tests/tes
 ```
 
 **F-01 and F-02 should be normal PASS tests, not XFAIL.** This work is model-only, with no live trade/Telegram action or production merge.
+
+
+## Astra's actual economic-design feedback (26 October 2026)
+
+**[Read the architecture findings and prioritized no-purchase research plan](./ASTRA_ARCHITECTURE_FINDINGS_RESPONSE_2026-10-26.md).** It summarizes the four user-provided photographs of Astra's critique, without claiming the full original review text was available. Astra recommends retaining full-spread/price-limit infrastructure but redesigning forecast calibration, joint allocation and matched portfolio performance evaluation. The report proposes three **OPEN** milestones (A forecast validation, B portfolio allocator, C paired forward evaluator), not completed code. F-01/F-02 implementation bugs are already fixed. Real option profitability remains unproven; Astra's task is architecture/economic review, not routine code review.
