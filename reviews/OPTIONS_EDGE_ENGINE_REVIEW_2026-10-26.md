@@ -37,3 +37,8 @@ The PUBLIC checkout has been verified independently: **86 relevant tests passed 
 - The real private paper ledger had **53 runs, zero archived options observations, and zero trades** during the 26 Oct inspection. No empirical net expectancy, Sharpe, win rate, strategy outperformance or fill probability is established.
 - No raw licensed option chains, user account records, browser sessions, original private DBs, broker connectors or Telegram delivery integrations are published.
 - Keep the original frozen strategy as control. An actual edge claim needs point-in-time bid/ask-side quotes, a trained independent real-world joint forecast, next-observation costed entries/exits, matched shared-capital baselines and untouched forward confirmation.
+
+
+## Current scope — architecture review, NOT routine code review
+
+Astra is requested to review **engine architecture, economic selection objective, joint underlying/option-IV forecasts, spread valuation, price limits, portfolio concentration and falsifiable strategy experiments**, rather than style, individual patches or unit test internals. F-01 and F-02 have been fixed and expanded tests pass; the older results in this document predate that repair. Begin with [Architecture review brief](./ASTRA_ARCHITECTURE_ENGINE_BRIEF.md) and [fix/verification details](./OPTIONS_ENGINE_F01_F02_FIX_AND_ARCHITECTURE_REVIEW_2026-10-26.md). The current public branch remains review-only, not a real profitable or live trading strategy.

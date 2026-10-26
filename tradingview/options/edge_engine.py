@@ -411,6 +411,8 @@ def price_limit(candidate,obs,forecast,now,*,policy=POLICY,research_policy=RESEA
 
 def compare_frozen_to_edge(obs,now,forecast=None,*,max_candidates=100,policy=POLICY):
     """One-clock matched eligible universe: change ranking only, not baseline exits."""
+    if not isinstance(max_candidates,int) or isinstance(max_candidates,bool) or max_candidates<1:
+        raise ValueError("INVALID_EVALUATION_BATCH_SIZE")
     try:
         frozen,reason=choose_candidate(obs,now,policy)
     except (ValueError,KeyError,TypeError):
@@ -419,6 +421,8 @@ def compare_frozen_to_edge(obs,now,forecast=None,*,max_candidates=100,policy=POL
                 challenger="NO_VALIDATED_FORECAST",
                 quote_basis="reference" if any(q.get("basis")=="reference" for q in obs.get("quotes",[])) else "unconfirmed",
                 rejections={},considered=0,ranked=[],selection=None,
+                evaluation_batch_size=max_candidates,evaluation_batches=0,
+                candidate_coverage="NONE",
                 price_limit=None,notifier_eligible=False,
                 cash_alternative_usd=0.0, portfolio_factor_risk="NOT_EVALUATED_NO_JOINT_MARKET_COHORT",
                 performance="NOT_MEASURED",paper_orders=0)
@@ -429,9 +433,10 @@ def compare_frozen_to_edge(obs,now,forecast=None,*,max_candidates=100,policy=POL
         return result
     result["rejections"]=rejected
     result["considered"]=len(candidates)
-    if len(candidates)>max_candidates:
-        result["challenger"]="CANDIDATE_SET_EXCEEDS_RESEARCH_LIMIT"
-        return result
+    # max_candidates is a COMPUTE BATCH SIZE, never a cap on the eligible
+    # universe. A cap creates selection bias when more than 12 spreads pass.
+    result["evaluation_batches"]=(len(candidates)+max_candidates-1)//max_candidates
+    result["candidate_coverage"]="ALL_ELIGIBLE_CANDIDATES_ACCOUNTED_FOR"
     if not candidates:
         result["challenger"]="NO_FROZEN_ELIGIBLE_CANDIDATES"
         return result
@@ -445,9 +450,14 @@ def compare_frozen_to_edge(obs,now,forecast=None,*,max_candidates=100,policy=POL
         result["forecast_error_type"]=type(exc).__name__
         return result
     rows=[]
-    for candidate in candidates:
+    batches=(candidates[i:i+max_candidates]
+             for i in range(0,len(candidates),max_candidates))
+    for candidate in (row for batch in batches for row in batch):
         try:
             metrics=value_candidate(candidate,obs,forecast,now)
+            # Preserve the price-limit computation for EVERY eligible spread,
+            # even if its observed quote fails; that limit may matter for a
+            # future (still non-actionable) cheaper reference entry.
             limit=price_limit(candidate,obs,forecast,now)
             quote_cash=number(candidate["indicative_cash"])
             if candidate["kind"]=="DEBIT":

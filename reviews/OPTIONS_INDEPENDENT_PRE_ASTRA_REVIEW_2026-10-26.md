@@ -89,3 +89,8 @@ python -m tradingview.options.existing_data_shadow --audit-only
 ```
 
 **Scope of independent review:** code and report inspection plus deterministic Python tests against the same branch, not an outside expert sign-off or real trading performance verification. No Astra session was started and no paid data/license was purchased.
+
+
+## Current fix status — supersedes historical bug reproduction
+
+Both original findings were FIXED in the current public branch: F-01 rejects beyond-21-calendar-day, post-expiry, and elapsed mandatory 7-DTE window reference marks; F-02 evaluates all candidates in batches, rather than dropping rankings when the eligible set exceeds 12. Regression tests for 13/50/132 candidates and decision-clock/expiry rejection now PASS normally. The older XFAIL descriptions above are historical evidence only. See [Architecture-only Astra brief](./ASTRA_ARCHITECTURE_ENGINE_BRIEF.md) and [fix report](./OPTIONS_ENGINE_F01_F02_FIX_AND_ARCHITECTURE_REVIEW_2026-10-26.md). Astra should assess architecture/financial assumptions and not repeat the routine code review.

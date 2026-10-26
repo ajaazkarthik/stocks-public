@@ -5,14 +5,14 @@ be needed to establish real returns. A reference bid/ask cross is a theoretical
 counterfactual, not a fill. Never write to the source paper/broker database.
 """
 from __future__ import annotations
-from datetime import timedelta
+from datetime import date, timedelta
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
 
 from tradingview.options.paper_scanner import (
-    POLICY,stamp,contract_key,cash_flow,validate_quote,validate_observation,
+    NY,POLICY,stamp,contract_key,cash_flow,validate_quote,validate_observation,
 )
 from tradingview.options.existing_data_shadow import DEFAULT_SHADOW
 
@@ -28,16 +28,40 @@ SCHEMA="""CREATE TABLE IF NOT EXISTS shadow_reference_reprices (
   UNIQUE(decision_id,followup_at)
 );"""
 
-def one_arm(candidate, obs, now):
+def one_arm(candidate, obs, now, *, decision_at=None):
+    """One hypothetical reference mark inside frozen v1's permitted window.
+
+    A reference quote is NEVER a fill or proof the policy's earlier
+    stop/target triggers did not already fire. Reconcile must supply the
+    original decision clock; the optional argument preserves a standalone
+    single-snapshot research calculation only.
+    """
     if candidate is None:
         return "CASH_ABSTAIN",0.0
+    moment=stamp(now)
+    expiry=date.fromisoformat(candidate["expiry"])
+    dte=(expiry-moment.astimezone(NY).date()).days
+    if dte<=0:
+        return "EXPIRED_OR_PAST_HORIZON",None
+    # Once the 7-DTE exit *day* has passed, a subsequent mark cannot be
+    # represented as an original v1 exit. A mark ON that day may still
+    # serve as a reference exit, without asserting a broker fill.
+    if dte<POLICY["exit_dte"]:
+        return "PAST_MANDATORY_PRE_EXPIRY_EXIT_WINDOW",None
+    if decision_at is not None:
+        decision=stamp(decision_at)
+        if moment<=decision:
+            return "NO_POST_DECISION_QUOTE",None
+        if moment>decision+timedelta(days=POLICY["max_hold_days"]):
+            return "EXPIRED_OR_PAST_HORIZON",None
     try:
         by_key={contract_key(q):q for q in obs["quotes"]}
         exact=[by_key[leg["key"]] for leg in candidate["legs"]]
         if any(q.get("basis")!="reference" for q in exact):
             return "OTHER_BASIS_NOT_COMPARABLE",None
-        for q in exact:
-            validate_quote(q,now,entry=False)
+        bounds=[validate_quote(q,moment,entry=False) for q in exact]
+        if (max(x[1] for x in bounds)-min(x[0] for x in bounds)).total_seconds()>POLICY['leg_skew_seconds']:
+            return 'LEG_QUOTE_TIMES_NOT_SYNCHRONIZED',None
         # Assumes crossing the TWO original quoted sides in and out; this
         # is a stress proxy, NOT a price available in one book at one time.
         exit_cash=cash_flow(candidate["legs"],exact,opening=False)
@@ -71,8 +95,8 @@ def reconcile(shadow_db, obs, now, *,max_decisions=100):
             old=stamp(earlier["observed_at"])
             if at<=old:
                 continue
-            baseline_status,baseline_pnl=one_arm(earlier.get("baseline_reference_candidate"),obs,moment)
-            edge_status,edge_pnl=one_arm(earlier.get("edge_reference_candidate"),obs,moment)
+            baseline_status,baseline_pnl=one_arm(earlier.get("baseline_reference_candidate"),obs,moment,decision_at=old)
+            edge_status,edge_pnl=one_arm(earlier.get("edge_reference_candidate"),obs,moment,decision_at=old)
             mid=hashlib.sha256((rid+"|"+obs["observed_at"]).encode()).hexdigest()
             results.append((mid,rid,at.isoformat(),obs["symbol"],
                             baseline_status,edge_status,baseline_pnl,edge_pnl,
